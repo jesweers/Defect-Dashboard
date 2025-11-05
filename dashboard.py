@@ -35,7 +35,7 @@ def _read_file_bytes(path: str) -> bytes:
         return f.read()
 
 # =========================
-# Persistence helpers (robust)
+# Persistence / helpers
 # =========================
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -279,8 +279,7 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
     Developer responds to review and submits back to owner:
     - appends developer comment entry and attachments
     - optionally saves hours & rate
-    - marks task completed immediately (so owner sees it)
-    - ensures archived=False so owner can view
+    - marks task completed immediately and archives it (so it's removed from Kanban)
     """
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
@@ -305,11 +304,11 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
                     it["amount"] = round(float(it["hours"]) * float(it["rate_at_completion"]), 2)
                 except Exception:
                     pass
-            # mark as completed immediately (do not put in inprogress)
+            # mark as completed immediately and archive it
             it["status"] = "completed"
             it["completed_at"] = _now_iso()
             it["updated_at"] = _now_iso()
-            it["archived"] = False  # visible to owner
+            it["archived"] = True  # archived on submit-to-owner per your latest request
             # clear review flags
             it["review_requested"] = False
             it["review_comments"] = ""
@@ -622,11 +621,11 @@ def developer_board():
                                 new_client = st.text_input("Client", value=it["client"])
                                 new_project = st.text_input("Project", value=it["project"])
                                 add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
-                                dev_resp = st.text_area("Response to owner (optional)", value="")
+                                dev_resp = st.text_area("Response to owner (REQUIRED)", value="")
                                 # allow dev to set hours & rate while submitting
                                 dev_hours = st.number_input("Hours (optional, will set on submit)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0))
                                 dev_rate = st.number_input("Rate (optional, will set on submit)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate))
-                                submit_to_owner = st.form_submit_button("Submit to Owner")
+                                submit_to_owner = st.form_submit_button("Submit to Owner (will complete & archive)")
                                 save_only = st.form_submit_button("Save")
                                 if save_only:
                                     it["title"] = new_title.strip()
@@ -643,23 +642,26 @@ def developer_board():
                                     save_data(st.session_state[STATE_KEY])
                                     st.rerun()
                                 if submit_to_owner:
-                                    # store new title/client/project
-                                    it["title"] = new_title.strip()
-                                    it["client"] = new_client.strip()
-                                    it["project"] = new_project.strip()
-                                    # submit and immediately mark completed (will not appear in inprogress)
-                                    submit_back_to_owner(
-                                        st.session_state[STATE_KEY],
-                                        it["id"],
-                                        dev_resp,
-                                        dev_files=add_files,
-                                        hours=(dev_hours if dev_hours and dev_hours > 0 else None),
-                                        rate_now=(dev_rate if dev_rate and dev_rate > 0 else None),
-                                    )
-                                    st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                                    save_data(st.session_state[STATE_KEY])
-                                    st.success("Submitted to Owner for review (moved to Completed).")
-                                    st.rerun()
+                                    if not dev_resp.strip():
+                                        st.warning("Developer response/comment is required before submitting to owner.")
+                                    else:
+                                        # store new title/client/project
+                                        it["title"] = new_title.strip()
+                                        it["client"] = new_client.strip()
+                                        it["project"] = new_project.strip()
+                                        # submit and immediately mark completed and archived
+                                        submit_back_to_owner(
+                                            st.session_state[STATE_KEY],
+                                            it["id"],
+                                            dev_resp,
+                                            dev_files=add_files,
+                                            hours=(dev_hours if dev_hours and dev_hours > 0 else None),
+                                            rate_now=(dev_rate if dev_rate and dev_rate > 0 else None),
+                                        )
+                                        st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                                        save_data(st.session_state[STATE_KEY])
+                                        st.success("Submitted to Owner for review, task marked completed and archived.")
+                                        st.rerun()
 
                     elif status == "inprogress":
                         c1, c2, c3 = st.columns(3)
@@ -678,26 +680,29 @@ def developer_board():
                                 new_client = st.text_input("Client", value=it["client"])
                                 new_project = st.text_input("Project", value=it["project"])
                                 add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
-                                dev_resp = st.text_area("Response to owner (optional)", value="")
+                                dev_resp = st.text_area("Response to owner (REQUIRED)", value="")
                                 dev_hours = st.number_input("Hours (optional, will set on submit)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0))
                                 dev_rate = st.number_input("Rate (optional, will set on submit)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate))
-                                submit_to_owner = st.form_submit_button("Submit to Owner")
+                                submit_to_owner = st.form_submit_button("Submit to Owner (will complete & archive)")
                                 cancel = st.form_submit_button("Cancel")
                                 if cancel:
                                     st.rerun()
                                 if submit_to_owner:
-                                    submit_back_to_owner(
-                                        st.session_state[STATE_KEY],
-                                        it["id"],
-                                        dev_resp,
-                                        dev_files=add_files,
-                                        hours=(dev_hours if dev_hours and dev_hours > 0 else None),
-                                        rate_now=(dev_rate if dev_rate and dev_rate > 0 else None),
-                                    )
-                                    st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                                    save_data(st.session_state[STATE_KEY])
-                                    st.success("Submitted to Owner for review (moved to Completed).")
-                                    st.rerun()
+                                    if not dev_resp.strip():
+                                        st.warning("Developer response/comment is required before submitting to owner.")
+                                    else:
+                                        submit_back_to_owner(
+                                            st.session_state[STATE_KEY],
+                                            it["id"],
+                                            dev_resp,
+                                            dev_files=add_files,
+                                            hours=(dev_hours if dev_hours and dev_hours > 0 else None),
+                                            rate_now=(dev_rate if dev_rate and dev_rate > 0 else None),
+                                        )
+                                        st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                                        save_data(st.session_state[STATE_KEY])
+                                        st.success("Submitted to Owner for review, task marked completed and archived.")
+                                        st.rerun()
 
                     # Hours form (pop-up-like)
                     if st.session_state.awaiting_hours_id == it["id"]:
