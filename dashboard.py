@@ -148,18 +148,19 @@ def set_archived(items, item_id, archived=True):
     return None
 
 # =========================
-# New: owner approval
+# Owner approval (modified behavior)
+#  - Do NOT archive on approve.
+#  - Move between Needs Approval and Approved lists via owner_approved flag.
 # =========================
 def approve_item(items, item_id):
-    """Mark an item as owner approved and archive it (no owner name required)."""
+    """Mark an item as owner approved (no name required) and keep it visible."""
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             it["owner_approved"] = True
             it["owner_approved_at"] = datetime.now().isoformat()
-            # no owner name required per request
             it["owner_approved_by"] = None
-            it["archived"] = True
             it["updated_at"] = datetime.now().isoformat()
+            # DO NOT set archived here so Owner can see Approved tasks
             return it
     return None
 
@@ -169,7 +170,6 @@ def revoke_approval(items, item_id):
             it["owner_approved"] = False
             it["owner_approved_at"] = None
             it["owner_approved_by"] = None
-            it["archived"] = False
             it["updated_at"] = datetime.now().isoformat()
             return it
     return None
@@ -203,7 +203,7 @@ if "awaiting_hours_id" not in st.session_state:
 if "awaiting_action" not in st.session_state:
     st.session_state.awaiting_action = None
 
-# global billing settings in session
+# billing defaults (kept but NOT exposed in sidebar)
 if "billing_currency" not in st.session_state:
     st.session_state.billing_currency = "$"
 if "billing_hourly_rate" not in st.session_state:
@@ -211,51 +211,34 @@ if "billing_hourly_rate" not in st.session_state:
 if "billing_tax_percent" not in st.session_state:
     st.session_state.billing_tax_percent = 0.0
 
+# auto_archive default (kept internal; not in sidebar)
+AUTO_ARCHIVE_DEFAULT = False
+
 # =========================
-# Simple multi-page routing (Fully modern Streamlit API)
+# Routing / Navigation
+#  - Sidebar will only contain Add Task form (user requested).
+#  - Provide a small top-level selector for switching pages when not on owner page.
 # =========================
-# pages: developer (kanban), owner (approval)
 params = st.query_params
 page = params.get("page", ["developer"])
 if isinstance(page, list):
     page = page[0] if page else "developer"
 
-# Sidebar navigation that updates URL params using st.query_params only.
-# IMPORTANT: When the active page is 'owner', only show the Owner Board option so an owner cannot navigate to the Developer board.
-with st.sidebar:
-    st.header("Navigation")
-    if page == "owner":
-        # Owner should only see Owner Board (no option to switch to developer)
-        selected = st.radio("Go to", ["Owner Board"], index=0)
-        target = "owner"
-    else:
-        # Normal view (developer or visitor) — allow switching
-        selected = st.radio("Go to", ["Developer Board", "Owner Board"], index=0 if page == "developer" else 1)
-        target = "developer" if selected == "Developer Board" else "owner"
-
+# Top-level navigation control (visible only on developer/visitor pages).
+# Owner page will not show this control (so Owner can't navigate to Developer).
+if page != "owner":
+    nav_sel = st.selectbox("View", ["Developer Board", "Owner Board"], index=0 if page == "developer" else 1)
+    target = "developer" if nav_sel == "Developer Board" else "owner"
     if target != page:
         st.query_params["page"] = [target]
         st.rerun()
+else:
+    # on owner page, show a plain header (no switching controls)
+    st.markdown("### 🔒 Owner Board (read-only)")
 
-# =========================
-# Sidebar: Settings / Add / Export (shared)
-# =========================
-st.sidebar.header("⚙️ Billing Settings")
-st.session_state.billing_currency = st.sidebar.text_input("Currency symbol", st.session_state.billing_currency)
-st.session_state.billing_hourly_rate = st.sidebar.number_input(
-    "Default hourly rate", min_value=0.0, step=100.0, value=float(st.session_state.billing_hourly_rate)
-)
-st.session_state.billing_tax_percent = st.sidebar.number_input(
-    "Tax % (optional)", min_value=0.0, step=0.5, value=float(st.session_state.billing_tax_percent)
-)
-
-st.sidebar.markdown("---")
-# Board visibility controls
-st.sidebar.header("🧱 Board Options")
-show_completed = st.sidebar.checkbox("Show 'Completed' column on Kanban", value=False)
-auto_archive = st.sidebar.checkbox("Auto-archive when completing", value=False)
-
-st.sidebar.markdown("---")
+# -------------------------
+# Sidebar: ONLY Add Task / Defect (per request)
+# -------------------------
 st.sidebar.header("➕ Add Task / Defect")
 with st.sidebar.form("add_form", clear_on_submit=True):
     ttype = st.selectbox("Type", TYPE_OPTIONS, index=0)
@@ -283,21 +266,9 @@ df_all = pd.DataFrame(items_list) if items_list else pd.DataFrame(
 total_hours_all = float(df_all["hours"].fillna(0).sum()) if not df_all.empty else 0.0
 total_hours_billable = float(df_all.loc[(df_all["billable"] == True), "hours"].fillna(0).sum()) if not df_all.empty else 0.0
 
-st.sidebar.markdown("---")
-st.sidebar.header("📤 Export Invoice")
-
-# Client filter options
-if not df_all.empty and "client" in df_all.columns:
-    try:
-        client_series = df_all["client"].dropna()
-        client_list = sorted([c for c in client_series.unique().tolist() if str(c).strip()])
-    except Exception:
-        client_list = []
-else:
-    client_list = []
-client_filter = st.sidebar.selectbox("Client", ["All"] + client_list, index=0)
-
-# Date range filter on completed_at
+# =========================
+# Invoice helpers (kept as-is)
+# =========================
 def parse_iso_d(d):
     try:
         return datetime.fromisoformat(d).date()
@@ -312,13 +283,9 @@ if not df_all.empty and "completed_at" in df_all.columns and df_all["completed_a
 else:
     min_d = max_d = date.today()
 
-date_sel = st.sidebar.date_input("Completed date range", (min_d, max_d))
-if isinstance(date_sel, tuple) and len(date_sel) == 2:
-    start_d, end_d = date_sel
-else:
-    start_d = end_d = date_sel
+date_sel = st.empty()  # placeholder; invoice filter UI not in sidebar anymore
 
-def build_invoice_df():
+def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="All"):
     if df_all.empty:
         return pd.DataFrame(columns=["Date","Title","Type","Client","Project","Hours","Rate","Amount"])
 
@@ -362,18 +329,12 @@ def build_invoice_df():
     })
     return out
 
-invoice_df = build_invoice_df()
-subtotal = float(invoice_df["Amount"].sum()) if not invoice_df.empty else 0.0
-tax_amt = round(subtotal * (st.session_state.billing_tax_percent / 100.0), 2) if subtotal > 0 else 0.0
-grand_total = round(subtotal + tax_amt, 2) if subtotal > 0 else 0.0
-
 # =========================
 # Developer Board (Kanban) UI
 # =========================
-
 def developer_board():
     st.title("📋 Developer Board: Tasks & Defects")
-    st.caption("Completed items are hidden from the Kanban by default. Use the sidebar to show them or archive them.")
+    st.caption("Completed items are hidden from Kanban by default. Use the Developer controls to edit.")
 
     # KPIs (active = not archived)
     active_ready = len(get_items_by_status(st.session_state[STATE_KEY], "ready"))
@@ -390,7 +351,7 @@ def developer_board():
     st.markdown("---")
     st.subheader("🧱 Kanban Board")
 
-    board_statuses = ["ready", "inprogress"] + (["completed"] if show_completed else [])
+    board_statuses = ["ready", "inprogress", "completed"]
     status_titles_map = {"ready": "Ready", "inprogress": "In Progress", "completed": "Completed"}
     cols = st.columns(len(board_statuses))
 
@@ -435,8 +396,7 @@ def developer_board():
                             cancel_btn = c2.form_submit_button("Cancel")
                             if save_btn:
                                 updated = set_hours_and_complete(st.session_state[STATE_KEY], it["id"], hrs, rate_now)
-                                if updated and auto_archive:
-                                    set_archived(st.session_state[STATE_KEY], it["id"], True)
+                                # developer chooses whether to archive completed items via Developer actions
                                 st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                 save_data(st.session_state[STATE_KEY])
                                 st.session_state.awaiting_hours_id = None
@@ -503,13 +463,13 @@ def developer_board():
                                 st.rerun()
 
                         elif status == "completed":
+                            # Developers still get archive/edit/delete controls
                             c1, c2, c3, c4 = st.columns(4)
                             if c1.button("✏ Edit Hours", key=f"edit_{it['id']}"):
                                 st.session_state.awaiting_hours_id = it["id"]
                                 st.session_state.awaiting_action = "edit"
                                 st.rerun()
                             if c2.button("↩ In Progress", key=f"back_inprog_{it['id']}"):
-                                # If moving back, unarchive so it appears in board
                                 set_status(st.session_state[STATE_KEY], it["id"], "inprogress")
                                 set_archived(st.session_state[STATE_KEY], it["id"], False)
                                 st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
@@ -543,59 +503,72 @@ def developer_board():
     st.markdown(f"**JSON file:** `{DATA_FILE.resolve()}`")
 
 # =========================
-# Owner Board UI (separate page)
+# Owner Board UI (two sections)
 # =========================
-
 def owner_board():
-    st.title("🔒 Owner Board: Approve Completed Tasks")
-    st.caption("Owners can review completed tasks and approve them. No name/password required.")
+    st.title("🔒 Owner Board: Needs Approval / Approved")
+    st.caption("Owner view is read-only except for Approve / Revoke. Approving moves tasks from Needs Approval → Approved.")
 
-    # Owner controls (read-only): Max age and whether PR required
+    # Owner controls: filtering options (read-only)
     col1, col2 = st.columns(2)
     max_age_days = col1.number_input("Max age (days) for approval", min_value=0, max_value=365, value=30)
     require_pr = col2.checkbox("Require Bitbucket PR URL to approve", value=True)
 
-    # List completed items (including archived so owner can see history)
-    completed_items = [it for it in st.session_state[STATE_KEY] if it.get("status") == "completed"]
-    if not completed_items:
-        st.info("No completed items.")
-        return
+    # Separate lists
+    needs_approval = [
+        it for it in st.session_state[STATE_KEY]
+        if it.get("status") == "completed" and not it.get("owner_approved", False)
+    ]
+    approved = [
+        it for it in st.session_state[STATE_KEY]
+        if it.get("status") == "completed" and it.get("owner_approved", False)
+    ]
 
-    for it in completed_items:
-        with st.expander(f"{it['title']}  —  #{it['id'][:8]}"):
-            # Read-only details
-            st.write(f"**Client:** {it.get('client','')}  •  **Project:** {it.get('project','')}")
-            st.write(f"**Completed at:** {it.get('completed_at')}")
-            st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
-            st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
-            st.write(f"**Owner approved:** {'Yes' if it.get('owner_approved') else 'No'}")
-            if it.get("owner_approved_at"):
-                st.write(f"**Approved at:** {it.get('owner_approved_at')}")
+    st.markdown("## Needs Approval")
+    if not needs_approval:
+        st.info("No completed items awaiting approval.")
+    else:
+        for it in needs_approval:
+            with st.expander(f"{it['title']}  —  #{it['id'][:8]}"):
+                st.write(f"**Client:** {it.get('client','')}  •  **Project:** {it.get('project','')}")
+                st.write(f"**Completed at:** {it.get('completed_at')}")
+                st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
+                st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
+                st.write(f"**Owner approved:** {'Yes' if it.get('owner_approved') else 'No'}")
 
-            # No editing allowed here (owner cannot modify PR, hours, etc.)
-            ok, reason = validate_for_approval(it, max_age_days, require_pr)
-
-            if it.get("owner_approved"):
-                if st.button("Revoke approval (unarchive)", key=f"revoke_{it['id']}"):
-                    revoke_approval(st.session_state[STATE_KEY], it['id'])
-                    st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                    save_data(st.session_state[STATE_KEY])
-                    st.success("Approval revoked and item unarchived")
-                    st.rerun()
-            else:
+                ok, reason = validate_for_approval(it, max_age_days, require_pr)
                 if ok:
-                    if st.button("✅ Approve & Archive", key=f"approve_{it['id']}"):
+                    if st.button("✅ Approve (move to Approved)", key=f"approve_{it['id']}"):
                         approve_item(st.session_state[STATE_KEY], it['id'])
                         st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                         save_data(st.session_state[STATE_KEY])
-                        st.success("Approved and archived.")
+                        st.success("Approved (moved to Approved tasks).")
                         st.rerun()
                 else:
                     st.error(f"Cannot approve: {reason}")
 
     st.markdown("---")
-    st.subheader("📑 All Saved Data (Owner view)")
-    st.caption("Includes archived and approved items. (Read-only for owner)")
+    st.markdown("## Approved Tasks")
+    if not approved:
+        st.info("No approved tasks.")
+    else:
+        for it in approved:
+            with st.expander(f"{it['title']}  —  #{it['id'][:8]}"):
+                st.write(f"**Client:** {it.get('client','')}  •  **Project:** {it.get('project','')}")
+                st.write(f"**Completed at:** {it.get('completed_at')}")
+                st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
+                st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
+                st.write(f"**Approved at:** {it.get('owner_approved_at') or '*Unknown*'}")
+                if st.button("Revoke approval (move back to Needs Approval)", key=f"revoke_{it['id']}"):
+                    revoke_approval(st.session_state[STATE_KEY], it['id'])
+                    st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                    save_data(st.session_state[STATE_KEY])
+                    st.success("Approval revoked.")
+                    st.rerun()
+
+    st.markdown("---")
+    st.subheader("📑 All Saved Data (Owner view - read only)")
+    st.caption("Includes archived and approved items.")
     st.dataframe(
         df_all if not df_all.empty else pd.DataFrame(
             columns=["id","type","title","client","project","billable","status","hours",
@@ -612,14 +585,20 @@ if page == "owner":
 else:
     developer_board()
 
+# =========================
 # Invoice preview (shared at bottom of pages if needed)
+# =========================
 st.markdown("---")
 st.subheader("🧾 Invoice Preview (filtered)")
-if invoice_df.empty:
-    st.info("No completed, billable items match the current filters.")
+invoice_preview = build_invoice_df(start_d=min_d, end_d=max_d, client_filter="All")
+if invoice_preview.empty:
+    st.info("No completed, billable items match the invoice filters.")
 else:
     currency = st.session_state.billing_currency or ""
-    st.dataframe(invoice_df, use_container_width=True)
+    st.dataframe(invoice_preview, use_container_width=True)
+    subtotal = float(invoice_preview["Amount"].sum()) if not invoice_preview.empty else 0.0
+    tax_amt = round(subtotal * (st.session_state.billing_tax_percent / 100.0), 2) if subtotal > 0 else 0.0
+    grand_total = round(subtotal + tax_amt, 2) if subtotal > 0 else 0.0
     st.write(f"**Subtotal:** {currency}{subtotal:.2f}")
     if st.session_state.billing_tax_percent > 0:
         st.write(f"**Tax ({st.session_state.billing_tax_percent:.1f}%):** {currency}{tax_amt:.2f}")
