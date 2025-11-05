@@ -1,4 +1,3 @@
-# Full Streamlit app — Submit-to-Owner moves task to completed immediately
 import json
 import uuid
 from datetime import datetime, date
@@ -36,7 +35,7 @@ def _read_file_bytes(path: str) -> bytes:
         return f.read()
 
 # =========================
-# Persistence / helpers
+# Persistence helpers (robust)
 # =========================
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -213,6 +212,7 @@ def set_hours_and_complete(items, item_id, hours: float, rate_now: float):
                 "attachments": [],
                 "at": _now_iso(),
             })
+            save_data(items)  # persist immediately
             return it
     return None
 
@@ -221,6 +221,7 @@ def set_archived(items, item_id, archived=True):
         if isinstance(it, dict) and it.get("id") == item_id:
             it["archived"] = bool(archived)
             it["updated_at"] = _now_iso()
+            save_data(items)
             return it
     return None
 
@@ -228,7 +229,8 @@ def set_archived(items, item_id, archived=True):
 # Comment history flows
 # =========================
 def append_history(items, item_id: str, actor: str, comment: str, attachment_files: Optional[List[Any]] = None):
-    """Add a chronological comment entry and save any attachments; returns the updated item."""
+    """Add a chronological comment entry and save any attachments; returns the updated item.
+       Saves to disk immediately to ensure persistence."""
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             saved_paths = []
@@ -247,6 +249,8 @@ def append_history(items, item_id: str, actor: str, comment: str, attachment_fil
             }
             it.setdefault("comment_history", []).append(entry)
             it["updated_at"] = _now_iso()
+            # persist immediately
+            save_data(items)
             return it
     return None
 
@@ -266,6 +270,7 @@ def request_review(items, item_id: str, owner_comment: str, owner_files: Optiona
             it["status"] = "inprogress"
             it["archived"] = False
             append_history(items, item_id, "owner", owner_comment or "", owner_files)
+            save_data(items)
             return it
     return None
 
@@ -279,7 +284,7 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
     """
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
-            # append dev comment and save attachments first
+            # append dev comment and save attachments first (append_history will persist)
             append_history(items, item_id, "dev", dev_comment or "", dev_files)
             it["dev_response_comments"] = dev_comment or ""
             it["dev_response_at"] = _now_iso()
@@ -312,6 +317,7 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
             it["owner_approved"] = False
             it["owner_approved_at"] = None
             it["owner_approved_by"] = None
+            save_data(items)
             return it
     return None
 
@@ -324,6 +330,7 @@ def approve_item(items, item_id: str):
             it["owner_approved_by"] = None
             append_history(items, item_id, "owner", "Approved", None)
             it["updated_at"] = _now_iso()
+            save_data(items)
             return it
     return None
 
@@ -335,6 +342,7 @@ def revoke_approval(items, item_id: str):
             it["owner_approved_by"] = None
             append_history(items, item_id, "owner", "Revoked approval", None)
             it["updated_at"] = _now_iso()
+            save_data(items)
             return it
     return None
 
@@ -478,7 +486,7 @@ def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="Al
     return out
 
 # =========================
-# UI helpers: render attachments & comment history (with colors)
+# UI helpers: render attachments & comment history (with colors & black text)
 # =========================
 def render_attachments_list(attachments: List[str], key_prefix: str):
     """Show thumbnails for images and download buttons for all attachments."""
@@ -502,7 +510,7 @@ def render_attachments_list(attachments: List[str], key_prefix: str):
             st.write("Attachment error:", e)
 
 def render_comment_history(item: Dict[str, Any]):
-    """Render chronological comment history as a boxed timeline with color-coded entries."""
+    """Render chronological comment history as a boxed timeline with color-coded entries and black text."""
     history = item.get("comment_history", []) or []
     if not history:
         st.info("No comments yet.")
@@ -525,10 +533,11 @@ def render_comment_history(item: Dict[str, Any]):
             bg = "#f5f5f5"  # light gray for system
             label = "System"
         safe_comment = (comment.replace("\n", "<br/>") if comment else "")
+        # Use black text color explicitly for readability
         html = f"""
-        <div style="background:{bg};padding:10px;border-radius:8px;margin-bottom:8px;border:1px solid #ddd;">
+        <div style="background:{bg};padding:10px;border-radius:8px;margin-bottom:8px;border:1px solid #ddd;color:#000;">
           <strong>{label}</strong> <span style="color:#666;font-size:12px">— {at.replace('T',' ')[:19]}</span>
-          <div style="margin-top:6px;font-size:14px">{safe_comment}</div>
+          <div style="margin-top:6px;font-size:14px;color:#000;">{safe_comment}</div>
         </div>
         """
         st.markdown(html, unsafe_allow_html=True)
@@ -588,7 +597,7 @@ def developer_board():
                     # render attachments (global)
                     render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
 
-                    # render conversation / timeline (color-coded)
+                    # render conversation / timeline (color-coded, black text)
                     render_comment_history(it)
 
                     # Actions
@@ -638,7 +647,7 @@ def developer_board():
                                     it["title"] = new_title.strip()
                                     it["client"] = new_client.strip()
                                     it["project"] = new_project.strip()
-                                    # submit and **immediately mark completed** (will not appear in inprogress)
+                                    # submit and immediately mark completed (will not appear in inprogress)
                                     submit_back_to_owner(
                                         st.session_state[STATE_KEY],
                                         it["id"],
@@ -690,7 +699,7 @@ def developer_board():
                                     st.success("Submitted to Owner for review (moved to Completed).")
                                     st.rerun()
 
-                    # Hours form
+                    # Hours form (pop-up-like)
                     if st.session_state.awaiting_hours_id == it["id"]:
                         with st.form(f"hours_form_{it['id']}"):
                             default_hours = float(it.get("hours") or 0.0)
