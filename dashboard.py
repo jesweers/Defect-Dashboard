@@ -1,3 +1,4 @@
+# Full Streamlit app — Submit-to-Owner moves task to completed immediately
 import json
 import uuid
 from datetime import datetime, date
@@ -35,7 +36,7 @@ def _read_file_bytes(path: str) -> bytes:
         return f.read()
 
 # =========================
-# Persistence helpers (robust)
+# Persistence / helpers
 # =========================
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -273,14 +274,15 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
     Developer responds to review and submits back to owner:
     - appends developer comment entry and attachments
     - optionally saves hours & rate
-    - marks task completed (so owner sees it)
+    - marks task completed immediately (so owner sees it)
     - ensures archived=False so owner can view
     """
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
+            # append dev comment and save attachments first
+            append_history(items, item_id, "dev", dev_comment or "", dev_files)
             it["dev_response_comments"] = dev_comment or ""
             it["dev_response_at"] = _now_iso()
-            append_history(items, item_id, "dev", dev_comment or "", dev_files)
             # optionally update hours/rate
             if hours is not None:
                 try:
@@ -294,13 +296,16 @@ def submit_back_to_owner(items, item_id: str, dev_comment: str, dev_files: Optio
                     pass
             # recompute amount if both present
             if it.get("hours") is not None and it.get("rate_at_completion") is not None:
-                it["amount"] = round(float(it["hours"]) * float(it["rate_at_completion"]), 2)
-            # mark as completed so owner sees it
+                try:
+                    it["amount"] = round(float(it["hours"]) * float(it["rate_at_completion"]), 2)
+                except Exception:
+                    pass
+            # mark as completed immediately (do not put in inprogress)
             it["status"] = "completed"
             it["completed_at"] = _now_iso()
             it["updated_at"] = _now_iso()
-            it["archived"] = False  # ensure visible for owner
-            # clear review flags (owner will decide)
+            it["archived"] = False  # visible to owner
+            # clear review flags
             it["review_requested"] = False
             it["review_comments"] = ""
             it["review_requested_at"] = None
@@ -551,6 +556,7 @@ def developer_board():
 
     st.markdown("---")
     st.subheader("🧱 Kanban Board (Developer)")
+    # only show ready and inprogress columns
     board_statuses = ["ready", "inprogress"]
     status_titles_map = {"ready": "Ready", "inprogress": "In Progress"}
     cols = st.columns(len(board_statuses))
@@ -608,7 +614,7 @@ def developer_board():
                                 new_project = st.text_input("Project", value=it["project"])
                                 add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
                                 dev_resp = st.text_area("Response to owner (optional)", value="")
-                                # new: allow dev to set hours & rate while submitting
+                                # allow dev to set hours & rate while submitting
                                 dev_hours = st.number_input("Hours (optional, will set on submit)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0))
                                 dev_rate = st.number_input("Rate (optional, will set on submit)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate))
                                 submit_to_owner = st.form_submit_button("Submit to Owner")
@@ -632,7 +638,7 @@ def developer_board():
                                     it["title"] = new_title.strip()
                                     it["client"] = new_client.strip()
                                     it["project"] = new_project.strip()
-                                    # call submit_back_to_owner with hours/rate and files
+                                    # submit and **immediately mark completed** (will not appear in inprogress)
                                     submit_back_to_owner(
                                         st.session_state[STATE_KEY],
                                         it["id"],
@@ -643,7 +649,7 @@ def developer_board():
                                     )
                                     st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                     save_data(st.session_state[STATE_KEY])
-                                    st.success("Submitted to Owner for review.")
+                                    st.success("Submitted to Owner for review (moved to Completed).")
                                     st.rerun()
 
                     elif status == "inprogress":
@@ -681,10 +687,10 @@ def developer_board():
                                     )
                                     st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                     save_data(st.session_state[STATE_KEY])
-                                    st.success("Submitted to Owner for review.")
+                                    st.success("Submitted to Owner for review (moved to Completed).")
                                     st.rerun()
 
-                    # Hours form (pop-up like)
+                    # Hours form
                     if st.session_state.awaiting_hours_id == it["id"]:
                         with st.form(f"hours_form_{it['id']}"):
                             default_hours = float(it.get("hours") or 0.0)
