@@ -52,7 +52,6 @@ def load_data() -> List[Dict[str, Any]]:
 
 def save_and_persist(items: List[Dict[str, Any]]):
     """Canonical save function used everywhere to persist state to JSON and keep session state synced."""
-    # ensure items are serializable and coerced
     cleaned = sanitize_items(items)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, indent=2, ensure_ascii=False)
@@ -301,7 +300,7 @@ if "billing_hourly_rate" not in st.session_state:
 # Use st.query_params; ?page=client to show client dashboard exclusively
 # -------------------------
 params = st.query_params
-page = params.get("page", ["developer"]) 
+page = params.get("page", ["developer"])
 if isinstance(page, list):
     page = page[0] if page else "developer"
 
@@ -341,7 +340,7 @@ if page == "developer":
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"]) 
+                        saved = _save_uploaded_file(f, item["id"])
                         saved_paths.append(saved)
                         item.setdefault("attachments", []).append(saved)
                     item.setdefault("comment_history", []).append({"actor": "dev", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
@@ -365,7 +364,7 @@ elif page == "client":
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"]) 
+                        saved = _save_uploaded_file(f, item["id"])
                         saved_paths.append(saved)
                         item.setdefault("attachments", []).append(saved)
                     item.setdefault("comment_history", []).append({"actor": "client", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
@@ -512,7 +511,7 @@ def developer_dashboard():
                                 it["project"] = new_project.strip()
                                 if add_files:
                                     for f in add_files:
-                                        saved = _save_uploaded_file(f, it["id"]) 
+                                        saved = _save_uploaded_file(f, it["id"])
                                         if saved not in it.get("attachments", []):
                                             it.setdefault("attachments", []).append(saved)
                                             append_history(st.session_state[STATE_KEY], it["id"], "dev", "Added attachment", [f])
@@ -541,25 +540,24 @@ def developer_dashboard():
                     if c1.button("↩ Ready", key=f"back_ready_{it['id']}"):
                         set_status_local(it["id"], "ready")
                         st.rerun()
+                    # Complete flow: single submit form (fixed)
                     if c2.button("Complete", key=f"complete_{it['id']}"):
                         with st.form(f"complete_form_{it['id']}", clear_on_submit=False):
                             hours = st.number_input("Hours worked (required)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0), key=f"hours_complete_{it['id']}")
                             rate = st.number_input("Rate (per hour)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate), key=f"rate_complete_{it['id']}")
                             dev_comment = st.text_area("Comments for client (required)", key=f"dev_comment_complete_{it['id']}")
                             add_files = st.file_uploader("Attach images (optional)", accept_multiple_files=True, key=f"complete_files_{it['id']}")
-                            submit = st.form_submit_button("Complete & Send to Client (Requires comment)")
-                            cancel = st.form_submit_button("Cancel")
-                            if submit:
-                                if not dev_comment.strip():
+                            submit_complete = st.form_submit_button("Complete & Send to Client (Requires comment)")
+                            if submit_complete:
+                                files_list = list(add_files) if add_files else []
+                                if not dev_comment or not dev_comment.strip():
                                     st.warning("Please provide a comment for the client before completing.")
-                                elif hours == 0 or hours is None:
+                                elif (hours is None) or (hours == 0):
                                     st.warning("Please enter hours worked (can be fractional).")
                                 else:
-                                    developer_complete(st.session_state[STATE_KEY], it["id"], hours, rate, dev_comment.strip(), dev_files=add_files if add_files else None)
+                                    developer_complete(st.session_state[STATE_KEY], it["id"], hours, rate, dev_comment.strip(), dev_files=files_list)
                                     st.success("Task completed and sent to client for approval.")
                                     st.rerun()
-                            if cancel:
-                                st.rerun()
                     if c3.button("Delete", key=f"del2_{it['id']}"):
                         st.session_state[STATE_KEY] = [x for x in st.session_state[STATE_KEY] if x.get("id") != it["id"]]
                         save_and_persist(st.session_state[STATE_KEY])
