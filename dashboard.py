@@ -198,14 +198,14 @@ if "billing_tax_percent" not in st.session_state:
 #  - Top selector for switching (hidden on owner page).
 # =========================
 params = st.query_params
-page = params.get("page", ["developer"])
+page = params.get("page", ["jesdib518"])
 if isinstance(page, list):
-    page = page[0] if page else "developer"
+    page = page[0] if page else "jesdib518"
 
 # Top-level navigation control (visible only on developer/visitor pages).
 if page != "owner":
-    nav_sel = st.selectbox("View", ["Developer Board", "Owner Board"], index=0 if page == "developer" else 1)
-    target = "developer" if nav_sel == "Developer Board" else "owner"
+    nav_sel = st.selectbox("View", ["Developer Board", "Owner Board"], index=0 if page == "jesdib518" else 1)
+    target = "jesdib518" if nav_sel == "Developer Board" else "owner"
     if target != page:
         st.query_params["page"] = [target]
         st.rerun()
