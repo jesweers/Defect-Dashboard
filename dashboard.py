@@ -1,9 +1,10 @@
 import json
 import uuid
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 from typing import List, Dict, Any
 import io
+import base64
 
 import pandas as pd
 import streamlit as st
@@ -12,9 +13,29 @@ import streamlit as st
 # Files & constants
 # =========================
 DATA_FILE = Path("tasks_data.json")
+ATTACH_DIR = Path("attachments")
+ATTACH_DIR.mkdir(exist_ok=True)
 STATUSES = ["ready", "inprogress", "completed"]
 TYPE_OPTIONS = ["task", "defect"]
 STATE_KEY = "items"  # stored in st.session_state[STATE_KEY]
+
+# =========================
+# Helpers for attachments
+# =========================
+def _save_uploaded_file(uploaded_file, item_id: str) -> str:
+    """Save an uploaded file to attachments directory and return relative path string."""
+    # create safe randomized filename
+    suffix = Path(uploaded_file.name).suffix
+    fname = f"{item_id}_{uuid.uuid4().hex}{suffix}"
+    dest = ATTACH_DIR / fname
+    # write bytes
+    with open(dest, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return str(dest)
+
+def _read_file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
 
 # =========================
 # Persistence helpers (robust)
@@ -41,6 +62,12 @@ def _coerce_item(x: Dict[str, Any]) -> Dict[str, Any]:
         "owner_approved": bool(x.get("owner_approved", False) if isinstance(x, dict) else False),
         "owner_approved_at": (x.get("owner_approved_at") if isinstance(x, dict) else None),
         "owner_approved_by": (x.get("owner_approved_by") if isinstance(x, dict) else None),
+        # review fields
+        "review_requested": bool(x.get("review_requested", False) if isinstance(x, dict) else False),
+        "review_comments": str(x.get("review_comments", "") if isinstance(x, dict) else "").strip(),
+        "review_requested_at": (x.get("review_requested_at") if isinstance(x, dict) else None),
+        # attachments
+        "attachments": list(x.get("attachments", []) if isinstance(x, dict) else []),
     }
     if base["status"] not in STATUSES:
         base["status"] = "ready"
@@ -106,6 +133,10 @@ def new_item(title: str, ttype: str, client: str, project: str, billable: bool):
         "owner_approved": False,
         "owner_approved_at": None,
         "owner_approved_by": None,
+        "review_requested": False,
+        "review_comments": "",
+        "review_requested_at": None,
+        "attachments": [],
     }
 
 def get_items_by_status(items, status):
@@ -128,6 +159,10 @@ def set_status(items, item_id, new_status):
     return None
 
 def set_hours_and_complete(items, item_id, hours: float, rate_now: float):
+    """
+    Developer completes item: set hours, amount, mark completed and auto-archive.
+    Also clears owner approval and review flags so it's a fresh completed item for owner.
+    """
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             it["hours"] = float(hours)
@@ -136,6 +171,15 @@ def set_hours_and_complete(items, item_id, hours: float, rate_now: float):
             it["updated_at"] = datetime.now().isoformat()
             it["rate_at_completion"] = float(rate_now)
             it["amount"] = round(float(hours) * float(rate_now), 2)
+            # auto-archive when developer clicks complete (per request)
+            it["archived"] = True
+            # reset owner/review state for the new completion
+            it["owner_approved"] = False
+            it["owner_approved_at"] = None
+            it["owner_approved_by"] = None
+            it["review_requested"] = False
+            it["review_comments"] = ""
+            it["review_requested_at"] = None
             return it
     return None
 
@@ -148,17 +192,20 @@ def set_archived(items, item_id, archived=True):
     return None
 
 # =========================
-# Owner approval (simple)
-#  - Approve toggles owner_approved flag and timestamps (no owner name)
+# Owner approval & review flows
 # =========================
 def approve_item(items, item_id):
-    """Mark an item as owner approved (no name required)."""
+    """Owner approves the task (no name required)."""
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             it["owner_approved"] = True
             it["owner_approved_at"] = datetime.now().isoformat()
             it["owner_approved_by"] = None
             it["updated_at"] = datetime.now().isoformat()
+            # clear review state
+            it["review_requested"] = False
+            it["review_comments"] = ""
+            it["review_requested_at"] = None
             return it
     return None
 
@@ -169,6 +216,34 @@ def revoke_approval(items, item_id):
             it["owner_approved_at"] = None
             it["owner_approved_by"] = None
             it["updated_at"] = datetime.now().isoformat()
+            return it
+    return None
+
+def request_review(items, item_id, comments: str, owner_attach_files: List[Any] = None):
+    """
+    Owner requests review: move item back to developer (inprogress),
+    attach comments and timestamp, clear approval, add owner attachments.
+    """
+    for it in items:
+        if isinstance(it, dict) and it.get("id") == item_id:
+            it["review_requested"] = True
+            it["review_comments"] = str(comments).strip()
+            it["review_requested_at"] = datetime.now().isoformat()
+            it["owner_approved"] = False
+            it["owner_approved_at"] = None
+            it["owner_approved_by"] = None
+            # move back to developer for fixes
+            it["status"] = "inprogress"
+            it["archived"] = False  # ensure visible on developer board
+            it["updated_at"] = datetime.now().isoformat()
+            # handle owner-uploaded files if any
+            if owner_attach_files:
+                for f in owner_attach_files:
+                    if f is not None:
+                        saved = _save_uploaded_file(f, item_id)
+                        # append if not already present
+                        if saved not in it.get("attachments", []):
+                            it.setdefault("attachments", []).append(saved)
             return it
     return None
 
@@ -193,9 +268,7 @@ if "billing_tax_percent" not in st.session_state:
     st.session_state.billing_tax_percent = 0.0
 
 # =========================
-# Routing / Navigation
-#  - Sidebar contains only Add Task form.
-#  - Top selector for switching (hidden on owner page).
+# Routing / Navigation (st.query_params)
 # =========================
 params = st.query_params
 page = params.get("page", ["jesdib518"])
@@ -213,7 +286,7 @@ else:
     st.markdown("### 🔒 Owner Board (read-only)")
 
 # -------------------------
-# Sidebar: ONLY Add Task / Defect
+# Sidebar: ONLY Add Task / Defect (with attachments)
 # -------------------------
 st.sidebar.header("➕ Add Task / Defect")
 with st.sidebar.form("add_form", clear_on_submit=True):
@@ -222,12 +295,19 @@ with st.sidebar.form("add_form", clear_on_submit=True):
     client = st.text_input("Client", placeholder="e.g., Acme Corp")
     project = st.text_input("Project", placeholder="e.g., Website Revamp")
     billable = st.checkbox("Billable", value=True)
+    add_files = st.file_uploader("Attach images/files (optional)", accept_multiple_files=True)
     submitted = st.form_submit_button("Add to Board")
     if submitted:
         if not title.strip():
             st.sidebar.error("Please enter a title.")
         else:
-            st.session_state[STATE_KEY].append(new_item(title, ttype, client, project, billable))
+            item = new_item(title, ttype, client, project, billable)
+            # save attachments if any
+            if add_files:
+                for f in add_files:
+                    saved = _save_uploaded_file(f, item["id"])
+                    item.setdefault("attachments", []).append(saved)
+            st.session_state[STATE_KEY].append(item)
             st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
             save_data(st.session_state[STATE_KEY])
             st.sidebar.success("Added!")
@@ -238,7 +318,8 @@ df_all = pd.DataFrame(items_list) if items_list else pd.DataFrame(
     columns=[
         "id","type","title","client","project","billable","status","hours",
         "rate_at_completion","amount","created_at","updated_at","completed_at",
-        "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+        "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
+        "review_requested","review_comments","review_requested_at","attachments"
     ]
 )
 
@@ -265,23 +346,18 @@ else:
 def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="All"):
     if df_all.empty:
         return pd.DataFrame(columns=["Date","Title","Type","Client","Project","Hours","Rate","Amount"])
-
     df = df_all.copy()
     df = df[(df["status"] == "completed") & (df["billable"] == True) & df["hours"].notna()]
-
     if client_filter != "All":
         df = df[df["client"] == client_filter]
-
     def in_range(iso):
         d = parse_iso_d(iso)
         if not d:
             return False
         return (d >= start_d) and (d <= end_d)
     df = df[df["completed_at"].apply(in_range)]
-
     if df.empty:
         return pd.DataFrame(columns=["Date","Title","Type","Client","Project","Hours","Rate","Amount"])
-
     rate_col, amt_col = [], []
     for _, r in df.iterrows():
         rate = float(r["rate_at_completion"]) if pd.notna(r["rate_at_completion"]) else float(st.session_state.billing_hourly_rate)
@@ -289,7 +365,6 @@ def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="Al
         amount = round(rate * hours, 2)
         rate_col.append(rate)
         amt_col.append(amount)
-
     out = pd.DataFrame({
         "Date": [str(x)[:10] for x in df["completed_at"]],
         "Title": df["title"],
@@ -303,11 +378,35 @@ def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="Al
     return out
 
 # =========================
+# UI helpers to show attachments
+# =========================
+def render_attachments_list(attachments: List[str], key_prefix: str):
+    """Show thumbnails for images and download buttons for all attachments."""
+    if not attachments:
+        return
+    for idx, p in enumerate(attachments):
+        try:
+            pth = Path(p)
+            if not pth.exists():
+                st.caption(f"Missing attachment: {p}")
+                continue
+            # Try to show as image if possible
+            try:
+                st.image(str(pth), caption=pth.name, use_column_width=False)
+            except Exception:
+                st.write(f"Attachment: {pth.name}")
+            # download button
+            data = _read_file_bytes(str(pth))
+            st.download_button(label=f"Download {pth.name}", data=data, file_name=pth.name, key=f"dl_{key_prefix}_{idx}")
+        except Exception as e:
+            st.write("Attachment error:", e)
+
+# =========================
 # Developer Board (full controls)
 # =========================
 def developer_board():
     st.title("📋 Developer Board: Tasks & Defects")
-    st.caption("Completed items are hidden from Kanban by default. Developer controls available.")
+    st.caption("Developer controls available. Completed items auto-archive when you click 'Save Hours & Complete'.")
 
     # KPIs
     active_ready = len(get_items_by_status(st.session_state[STATE_KEY], "ready"))
@@ -356,6 +455,13 @@ def developer_board():
                     if it.get("pr_url"):
                         st.markdown(f"PR: {it.get('pr_url')}")
 
+                    # show review comment if present
+                    if it.get("review_requested"):
+                        st.warning(f"Review requested: {it.get('review_comments','')}  \nRequested at: {it.get('review_requested_at')}")
+
+                    # render attachments (thumbnails + download)
+                    render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
+
                     # Hours edit/complete mode
                     if st.session_state.awaiting_hours_id == it["id"]:
                         with st.form(f"hours_form_{it['id']}"):
@@ -364,16 +470,23 @@ def developer_board():
                             hrs = st.number_input("Hours worked", min_value=0.0, step=0.25, value=default_hours, key=f"hrs_input_{it['id']}")
                             rate_now = st.number_input("Lock rate (per hour)", min_value=0.0, step=50.0,
                                                        value=default_rate, key=f"rate_input_{it['id']}")
+                            add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
                             c1, c2 = st.columns(2)
                             save_btn = c1.form_submit_button("Save Hours & Complete")
                             cancel_btn = c2.form_submit_button("Cancel")
                             if save_btn:
                                 updated = set_hours_and_complete(st.session_state[STATE_KEY], it["id"], hrs, rate_now)
+                                # save any new attachments
+                                if add_files:
+                                    for f in add_files:
+                                        saved = _save_uploaded_file(f, it["id"])
+                                        if saved not in updated.get("attachments", []):
+                                            updated.setdefault("attachments", []).append(saved)
                                 st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                 save_data(st.session_state[STATE_KEY])
                                 st.session_state.awaiting_hours_id = None
                                 st.session_state.awaiting_action = None
-                                st.success("Saved & completed.")
+                                st.success("Saved & completed (auto-archived).")
                                 st.rerun()
                             if cancel_btn:
                                 st.session_state.awaiting_hours_id = None
@@ -398,17 +511,25 @@ def developer_board():
                                 save_data(st.session_state[STATE_KEY])
                                 st.rerun()
                             if c3.button("Edit", key=f"edit_meta_{it['id']}"):
+                                # inline edit form including attachment uploader
                                 with st.form(f"edit_form_{it['id']}"):
                                     new_title = st.text_input("Title", value=it["title"])
                                     new_client = st.text_input("Client", value=it["client"])
                                     new_project = st.text_input("Project", value=it["project"])
                                     new_billable = st.checkbox("Billable", value=bool(it["billable"]))
+                                    add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
                                     ok = st.form_submit_button("Save")
                                     if ok:
                                         it["title"] = new_title.strip()
                                         it["client"] = new_client.strip()
                                         it["project"] = new_project.strip()
                                         it["billable"] = bool(new_billable)
+                                        # save attachments
+                                        if add_files:
+                                            for f in add_files:
+                                                saved = _save_uploaded_file(f, it["id"])
+                                                if saved not in it.get("attachments", []):
+                                                    it.setdefault("attachments", []).append(saved)
                                         it["updated_at"] = datetime.now().isoformat()
                                         st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                         save_data(st.session_state[STATE_KEY])
@@ -435,6 +556,7 @@ def developer_board():
                                 st.rerun()
 
                         elif status == "completed":
+                            # Developers still get archive/edit/delete controls (rare because completed auto-archives)
                             c1, c2, c3, c4 = st.columns(4)
                             if c1.button("✏ Edit Hours", key=f"edit_{it['id']}"):
                                 st.session_state.awaiting_hours_id = it["id"]
@@ -468,7 +590,8 @@ def developer_board():
             columns=[
                 "id","type","title","client","project","billable","status","hours",
                 "rate_at_completion","amount","created_at","updated_at","completed_at",
-                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
+                "review_requested","review_comments","review_requested_at","attachments"
             ]
         ),
         use_container_width=True
@@ -477,11 +600,11 @@ def developer_board():
     st.markdown(f"**JSON file:** `{DATA_FILE.resolve()}`")
 
 # =========================
-# Owner Board UI (Needs Approval / Approved)
+# Owner Board UI (Needs Approval / Approved + Review + owner attachments)
 # =========================
 def owner_board():
     st.title("🔒 Owner Board: Needs Approval / Approved")
-    st.caption("Owner view is read-only except for Approve / Revoke. No max-age or PR checks.")
+    st.caption("Owner view is read-only except for Approve / Review / Revoke. Owners can attach images when requesting review.")
 
     # Needs Approval (completed, not owner_approved)
     needs_approval = [
@@ -504,13 +627,34 @@ def owner_board():
                 st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
                 st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
                 st.write(f"**Owner approved:** {'Yes' if it.get('owner_approved') else 'No'}")
+                if it.get("review_requested"):
+                    st.info(f"Review requested: {it.get('review_comments','')} (at {it.get('review_requested_at')})")
+                # show any attachments
+                render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
 
+                # Approve button
                 if st.button("✅ Approve (move to Approved)", key=f"approve_{it['id']}"):
                     approve_item(st.session_state[STATE_KEY], it['id'])
                     st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                     save_data(st.session_state[STATE_KEY])
                     st.success("Approved (moved to Approved tasks).")
                     st.rerun()
+
+                # Review button & comment form (owner enters comment -> moves to dev)
+                with st.form(f"review_form_{it['id']}", clear_on_submit=True):
+                    review_txt = st.text_area("Leave review comments (developer will see this and fix)", value="")
+                    owner_files = st.file_uploader("Attach images/files with review (optional)", accept_multiple_files=True)
+                    submit_review = st.form_submit_button("Request changes / Send to Developer")
+                    if submit_review:
+                        if not review_txt.strip():
+                            st.warning("Please enter review comments before submitting.")
+                        else:
+                            # pass owner_files through to request_review
+                            request_review(st.session_state[STATE_KEY], it['id'], review_txt.strip(), owner_attach_files=owner_files)
+                            st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                            save_data(st.session_state[STATE_KEY])
+                            st.success("Review requested — moved back to developer board for fixes.")
+                            st.rerun()
 
     st.markdown("---")
     st.markdown("## Approved Tasks")
@@ -524,6 +668,7 @@ def owner_board():
                 st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
                 st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
                 st.write(f"**Approved at:** {it.get('owner_approved_at') or '*Unknown*'}")
+                render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
                 if st.button("Revoke approval (move back to Needs Approval)", key=f"revoke_{it['id']}"):
                     revoke_approval(st.session_state[STATE_KEY], it['id'])
                     st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
@@ -539,7 +684,8 @@ def owner_board():
             columns=[
                 "id","type","title","client","project","billable","status","hours",
                 "rate_at_completion","amount","created_at","updated_at","completed_at",
-                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
+                "review_requested","review_comments","review_requested_at","attachments"
             ]
         ),
         use_container_width=True
