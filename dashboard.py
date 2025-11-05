@@ -50,9 +50,13 @@ def load_data() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-def save_data(items: List[Dict[str, Any]]):
+def save_and_persist(items: List[Dict[str, Any]]):
+    """Canonical save function used everywhere to persist state to JSON and keep session state synced."""
+    # ensure items are serializable and coerced
+    cleaned = sanitize_items(items)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(items, f, indent=2, ensure_ascii=False)
+        json.dump(cleaned, f, indent=2, ensure_ascii=False)
+    st.session_state[STATE_KEY] = cleaned
 
 # -------------------------
 # Normalize / sanitize
@@ -164,7 +168,7 @@ def get_items_by_status(items, status):
     return out
 
 def append_history(items, item_id: str, actor: str, comment: str, attachment_files: Optional[List[Any]] = None):
-    """Add entry to conversation and persist."""
+    """Add entry to conversation and persist using save_and_persist."""
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             saved_paths = []
@@ -183,8 +187,7 @@ def append_history(items, item_id: str, actor: str, comment: str, attachment_fil
             }
             it.setdefault("comment_history", []).append(entry)
             it["updated_at"] = _now_iso()
-            st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(items)
             return it
     return None
 
@@ -202,9 +205,9 @@ def developer_complete(items, item_id: str, hours: float, rate: float, dev_comme
             it["archived"] = False
             it["needs_client_approval"] = True
             it["client_approved"] = False
-            # append dev comment
+            # append dev comment and persist
             append_history(items, item_id, "dev", dev_comment or "", dev_files)
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(items)
             return it
     return None
 
@@ -216,7 +219,7 @@ def client_approve(items, item_id: str):
             it["needs_client_approval"] = False
             append_history(items, item_id, "client", "Approved", None)
             it["updated_at"] = _now_iso()
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(items)
             return it
     return None
 
@@ -230,7 +233,7 @@ def client_request_changes(items, item_id: str, comment: str, files: Optional[Li
             it["status"] = "inprogress"
             append_history(items, item_id, "client", comment or "", files)
             it["updated_at"] = _now_iso()
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(items)
             return it
     return None
 
@@ -260,7 +263,7 @@ def developer_respond_changes(items, item_id: str, comment: str, files: Optional
             it["needs_client_approval"] = True
             it["client_approved"] = False
             it["updated_at"] = _now_iso()
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(items)
             return it
     return None
 
@@ -271,7 +274,7 @@ def client_mark_paid(items, ids: List[str]):
             it["payment_requested"] = True
             it["payment_requested_at"] = _now_iso()
             append_history(items, it["id"], "client", "Marked as Paid (client)", None)
-    save_data(st.session_state[STATE_KEY])
+    save_and_persist(items)
 
 def developer_confirm_payment(items, ids: List[str]):
     """Developer confirms payment: mark payment_confirmed_by_dev True and archive tasks (history)."""
@@ -281,7 +284,7 @@ def developer_confirm_payment(items, ids: List[str]):
             it["payment_confirmed_at"] = _now_iso()
             it["archived"] = True  # move to history
             append_history(items, it["id"], "dev", "Confirmed receipt of payment", None)
-    save_data(st.session_state[STATE_KEY])
+    save_and_persist(items)
 
 # -------------------------
 # Session init & defaults
@@ -298,7 +301,7 @@ if "billing_hourly_rate" not in st.session_state:
 # Use st.query_params; ?page=client to show client dashboard exclusively
 # -------------------------
 params = st.query_params
-page = params.get("page", ["developer"])
+page = params.get("page", ["developer"]) 
 if isinstance(page, list):
     page = page[0] if page else "developer"
 
@@ -307,18 +310,15 @@ if page != "client":
     nav = st.selectbox("Open", ["Developer Dashboard", "Client Dashboard"], index=0 if page == "developer" else 1)
     if nav == "Developer Dashboard" and page != "developer":
         st.query_params["page"] = ["developer"]
-        st.experimental_rerun()
+        st.rerun()
     if nav == "Client Dashboard" and page != "client":
         st.query_params["page"] = ["client"]
-        st.experimental_rerun()
+        st.rerun()
 else:
     st.markdown("### 🔒 Client Dashboard (single-page view)")
 
 # -------------------------
-# Sidebar for both: Add Task (but requirement says Client has add panel too)
-# However user requested 'remove everything except add' earlier; keep small sidebar:
-# For developer page, left panel includes hourly rate + Add Task
-# For client page, left panel includes Add Task only.
+# Sidebar for both: Add Task
 # -------------------------
 if page == "developer":
     st.sidebar.header("Developer Settings")
@@ -341,16 +341,14 @@ if page == "developer":
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"])
+                        saved = _save_uploaded_file(f, item["id"]) 
                         saved_paths.append(saved)
                         item.setdefault("attachments", []).append(saved)
                     item.setdefault("comment_history", []).append({"actor": "dev", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
                 st.session_state[STATE_KEY].append(item)
-                st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                save_data(st.session_state[STATE_KEY])
+                save_and_persist(st.session_state[STATE_KEY])
                 st.sidebar.success("Task created.")
 elif page == "client":
-    # Client page only - left panel for adding tasks
     st.sidebar.header("➕ Client: Add Task / Defect")
     with st.sidebar.form("add_form_client", clear_on_submit=True):
         ttype = st.selectbox("Type", TYPE_OPTIONS, index=0, key="add_type_client")
@@ -364,19 +362,15 @@ elif page == "client":
                 st.sidebar.error("Please enter a title.")
             else:
                 item = new_item(title, ttype, "Client", project, billable)
-                # Client-created tasks are immediately Needs Approval? We'll put them as completed and needs_client_approval False
-                # But common flows: client creates a task for developer — put as ready instead
-                # We'll keep client-created tasks as ready
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"])
+                        saved = _save_uploaded_file(f, item["id"]) 
                         saved_paths.append(saved)
                         item.setdefault("attachments", []).append(saved)
                     item.setdefault("comment_history", []).append({"actor": "client", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
                 st.session_state[STATE_KEY].append(item)
-                st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                save_data(st.session_state[STATE_KEY])
+                save_and_persist(st.session_state[STATE_KEY])
                 st.sidebar.success("Task created.")
 
 # Build df_all for tables
@@ -481,11 +475,10 @@ def developer_dashboard():
                         if not dev_comment.strip():
                             st.warning("Response comment is required.")
                         else:
-                            # convert files to list if empty
                             files_list = add_files if add_files else []
                             developer_respond_changes(st.session_state[STATE_KEY], it["id"], dev_comment.strip(), files_list, hours=(new_hours if new_hours>0 else None), rate=(new_rate if new_rate>0 else None))
                             st.success("Submitted back to client for approval.")
-                            st.experimental_rerun()
+                            st.rerun()
 
     st.markdown("---")
     st.subheader("Kanban")
@@ -505,7 +498,7 @@ def developer_dashboard():
                     c1, c2, c3 = st.columns([1,1,1])
                     if c1.button("→ In Progress", key=f"to_inprog_{it['id']}"):
                         set_status_local(it["id"], "inprogress")
-                        st.experimental_rerun()
+                        st.rerun()
                     if c2.button("Edit", key=f"edit_{it['id']}"):
                         with st.form(f"edit_form_{it['id']}", clear_on_submit=False):
                             new_title = st.text_input("Title", value=it["title"], key=f"title_edit_{it['id']}")
@@ -519,18 +512,18 @@ def developer_dashboard():
                                 it["project"] = new_project.strip()
                                 if add_files:
                                     for f in add_files:
-                                        saved = _save_uploaded_file(f, it["id"])
+                                        saved = _save_uploaded_file(f, it["id"]) 
                                         if saved not in it.get("attachments", []):
                                             it.setdefault("attachments", []).append(saved)
                                             append_history(st.session_state[STATE_KEY], it["id"], "dev", "Added attachment", [f])
                                 it["updated_at"] = _now_iso()
-                                save_data(st.session_state[STATE_KEY])
+                                save_and_persist(st.session_state[STATE_KEY])
                                 st.success("Saved.")
-                                st.experimental_rerun()
+                                st.rerun()
                     if c3.button("Delete", key=f"del_{it['id']}"):
                         st.session_state[STATE_KEY] = [x for x in st.session_state[STATE_KEY] if x.get("id") != it["id"]]
-                        save_data(st.session_state[STATE_KEY])
-                        st.experimental_rerun()
+                        save_and_persist(st.session_state[STATE_KEY])
+                        st.rerun()
 
     # In Progress column
     with cols[1]:
@@ -547,9 +540,8 @@ def developer_dashboard():
                     c1, c2, c3 = st.columns([1,1,1])
                     if c1.button("↩ Ready", key=f"back_ready_{it['id']}"):
                         set_status_local(it["id"], "ready")
-                        st.experimental_rerun()
+                        st.rerun()
                     if c2.button("Complete", key=f"complete_{it['id']}"):
-                        # open form to enter hours, comment, attachments and mark completed
                         with st.form(f"complete_form_{it['id']}", clear_on_submit=False):
                             hours = st.number_input("Hours worked (required)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0), key=f"hours_complete_{it['id']}")
                             rate = st.number_input("Rate (per hour)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate), key=f"rate_complete_{it['id']}")
@@ -565,16 +557,17 @@ def developer_dashboard():
                                 else:
                                     developer_complete(st.session_state[STATE_KEY], it["id"], hours, rate, dev_comment.strip(), dev_files=add_files if add_files else None)
                                     st.success("Task completed and sent to client for approval.")
-                                    st.experimental_rerun()
+                                    st.rerun()
                             if cancel:
-                                st.experimental_rerun()
+                                st.rerun()
                     if c3.button("Delete", key=f"del2_{it['id']}"):
                         st.session_state[STATE_KEY] = [x for x in st.session_state[STATE_KEY] if x.get("id") != it["id"]]
-                        save_data(st.session_state[STATE_KEY])
-                        st.experimental_rerun()
+                        save_and_persist(st.session_state[STATE_KEY])
+                        st.rerun()
 
     st.markdown("---")
     st.subheader("Payments Requests (Pending confirmation)")
+    payments_pending = [it for it in st.session_state[STATE_KEY] if it.get("payment_requested") and not it.get("payment_confirmed_by_dev") and not it.get("archived")]
     if not payments_pending:
         st.info("No payment requests.")
     else:
@@ -585,29 +578,26 @@ def developer_dashboard():
                 if st.button("Confirm payment received", key=f"confirm_pay_{it['id']}"):
                     developer_confirm_payment(st.session_state[STATE_KEY], [it["id"]])
                     st.success("Payment confirmed and task archived.")
-                    st.experimental_rerun()
+                    st.rerun()
 
     st.markdown("---")
     st.subheader("Completed / Archived Tasks Table")
-    # Show completed or archived tasks (user asked for table of archived or completed)
+    # Show completed or archived tasks
     show_table = [it for it in st.session_state[STATE_KEY] if (it.get("status") == "completed" or it.get("archived"))]
     df_table = pd.DataFrame(show_table) if show_table else pd.DataFrame(columns=["id","title","client","project","hours","rate_at_completion","amount","status","archived"])
     if df_table.empty:
         st.info("No completed or archived tasks yet.")
     else:
-        # present subset columns
         view = df_table[["id","title","type","client","project","hours","rate_at_completion","amount","status","archived"]].copy()
         view["id"] = view["id"].apply(lambda x: x[:8])
-        st.dataframe(view, use_container_width=True)
-        # totals (for this filtered set)
+        st.dataframe(view, width="stretch")
         total_hours = float(df_table["hours"].fillna(0).sum())
         total_bill = float(df_table["amount"].fillna(0).sum())
         st.markdown(f"**Totals (shown rows):** Hours = {total_hours:.2f} h  •  Bill = {total_bill:.2f}")
 
     st.markdown("---")
     st.subheader("All tasks (raw JSON)")
-    st.caption("For debugging / export")
-    st.dataframe(df_all, use_container_width=True)
+    st.dataframe(df_all, width="stretch")
 
 # helper to set status quickly (and persist)
 def set_status_local(item_id: str, new_status: str):
@@ -617,7 +607,7 @@ def set_status_local(item_id: str, new_status: str):
             it["updated_at"] = _now_iso()
             if new_status != "completed":
                 it["completed_at"] = None
-            save_data(st.session_state[STATE_KEY])
+            save_and_persist(st.session_state[STATE_KEY])
             return
 
 # -------------------------
@@ -627,9 +617,7 @@ def client_dashboard():
     st.title("👤 Client Dashboard")
     st.caption("Client view is single-page: approve, request changes, or mark paid. Client cannot navigate to other pages.")
 
-    # filter form: date range for paid marking and viewing
     st.markdown("### Tasks needing your attention")
-    # Needs Approval: tasks completed by dev & needs_client_approval True
     needs_approval = [it for it in st.session_state[STATE_KEY] if it.get("status") == "completed" and it.get("needs_client_approval") and not it.get("archived")]
     approved = [it for it in st.session_state[STATE_KEY] if it.get("status") == "completed" and it.get("client_approved") and not it.get("archived")]
 
@@ -646,9 +634,8 @@ def client_dashboard():
                 if c1.button("✅ Approve", key=f"c_approve_{it['id']}"):
                     client_approve(st.session_state[STATE_KEY], it["id"])
                     st.success("Approved.")
-                    st.experimental_rerun()
+                    st.rerun()
                 if c2.button("↩ Request changes", key=f"c_reqchg_{it['id']}"):
-                    # show form in modal-like section for comment & attachments
                     with st.form(f"client_req_form_{it['id']}", clear_on_submit=True):
                         comment = st.text_area("Describe changes required (required)", key=f"req_comment_{it['id']}")
                         owner_files = st.file_uploader("Attach images (optional)", accept_multiple_files=True, key=f"req_files_{it['id']}")
@@ -657,9 +644,9 @@ def client_dashboard():
                             if not comment.strip():
                                 st.warning("Please provide comments explaining required changes.")
                             else:
-                                client_request_changes(st.session_state[STATE_KEY], it["id"], comment.strip(), owner_files if owner_files else None)
+                                client_request_changes(st.session_state[STATE_KEY], it['id'], comment.strip(), owner_files if owner_files else None)
                                 st.success("Sent back to developer for fixes.")
-                                st.experimental_rerun()
+                                st.rerun()
 
     st.markdown("---")
     st.markdown("#### Approved Tasks")
@@ -674,11 +661,9 @@ def client_dashboard():
 
     st.markdown("---")
     st.subheader("Mark Approved Tasks as Paid (select date range)")
-    # date range
     col1, col2 = st.columns(2)
     start_d = col1.date_input("From", value=date.today())
     end_d = col2.date_input("To", value=date.today())
-    # filter approved tasks by completed_at date range
     def in_range(iso):
         try:
             d = datetime.fromisoformat(iso).date()
@@ -689,7 +674,6 @@ def client_dashboard():
     if not approved_in_range:
         st.info("No approved tasks in selected date range available for payment.")
     else:
-        # show checkboxes to select multiple
         ids = []
         for it in approved_in_range:
             checked = st.checkbox(f"{it['title']} — {it.get('amount')} — #{it['id'][:8]}", key=f"pay_chk_{it['id']}")
@@ -699,11 +683,11 @@ def client_dashboard():
             if st.button("Mark selected as Paid"):
                 client_mark_paid(st.session_state[STATE_KEY], ids)
                 st.success("Marked as Paid — developer will confirm receipt.")
-                st.experimental_rerun()
+                st.rerun()
 
     st.markdown("---")
     st.subheader("All tasks (client view)")
-    st.dataframe(df_all, use_container_width=True)
+    st.dataframe(df_all, width="stretch")
 
 # -------------------------
 # Page routing & launch
