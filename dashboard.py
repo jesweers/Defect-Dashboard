@@ -23,7 +23,7 @@ STATE_KEY = "items"  # st.session_state[STATE_KEY]
 # Simple developer credentials (as requested)
 # -------------------------
 DEV_USERNAME = "jesweer"
-DEV_PASSWORD = "jesBMW518@"
+DEV_PASSWORD = "jesBMW518"
 
 # -------------------------
 # Helpers: time & files
