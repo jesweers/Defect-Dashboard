@@ -148,19 +148,17 @@ def set_archived(items, item_id, archived=True):
     return None
 
 # =========================
-# Owner approval (modified behavior)
-#  - Do NOT archive on approve.
-#  - Move between Needs Approval and Approved lists via owner_approved flag.
+# Owner approval (simple)
+#  - Approve toggles owner_approved flag and timestamps (no owner name)
 # =========================
 def approve_item(items, item_id):
-    """Mark an item as owner approved (no name required) and keep it visible."""
+    """Mark an item as owner approved (no name required)."""
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
             it["owner_approved"] = True
             it["owner_approved_at"] = datetime.now().isoformat()
             it["owner_approved_by"] = None
             it["updated_at"] = datetime.now().isoformat()
-            # DO NOT set archived here so Owner can see Approved tasks
             return it
     return None
 
@@ -174,23 +172,6 @@ def revoke_approval(items, item_id):
             return it
     return None
 
-def validate_for_approval(it: Dict[str, Any], max_age_days: int, require_pr: bool) -> (bool, str):
-    """Return (ok, reason). Checks completed_at within max_age_days and presence of pr_url if required."""
-    if not it.get("completed_at"):
-        return False, "Not completed"
-    try:
-        completed_dt = datetime.fromisoformat(it["completed_at"]) if isinstance(it["completed_at"], str) else None
-    except Exception:
-        completed_dt = None
-    if not completed_dt:
-        return False, "Invalid completed_at"
-    age = datetime.now() - completed_dt
-    if age > timedelta(days=max_age_days):
-        return False, f"Completed {age.days} days ago — exceeds {max_age_days}d limit"
-    if require_pr and not it.get("pr_url"):
-        return False, "Missing PR URL"
-    return True, "OK"
-
 # =========================
 # Session state init + sanitize
 # =========================
@@ -203,7 +184,7 @@ if "awaiting_hours_id" not in st.session_state:
 if "awaiting_action" not in st.session_state:
     st.session_state.awaiting_action = None
 
-# billing defaults (kept but NOT exposed in sidebar)
+# billing defaults (kept but not displayed)
 if "billing_currency" not in st.session_state:
     st.session_state.billing_currency = "$"
 if "billing_hourly_rate" not in st.session_state:
@@ -211,13 +192,10 @@ if "billing_hourly_rate" not in st.session_state:
 if "billing_tax_percent" not in st.session_state:
     st.session_state.billing_tax_percent = 0.0
 
-# auto_archive default (kept internal; not in sidebar)
-AUTO_ARCHIVE_DEFAULT = False
-
 # =========================
 # Routing / Navigation
-#  - Sidebar will only contain Add Task form (user requested).
-#  - Provide a small top-level selector for switching pages when not on owner page.
+#  - Sidebar contains only Add Task form.
+#  - Top selector for switching (hidden on owner page).
 # =========================
 params = st.query_params
 page = params.get("page", ["developer"])
@@ -225,7 +203,6 @@ if isinstance(page, list):
     page = page[0] if page else "developer"
 
 # Top-level navigation control (visible only on developer/visitor pages).
-# Owner page will not show this control (so Owner can't navigate to Developer).
 if page != "owner":
     nav_sel = st.selectbox("View", ["Developer Board", "Owner Board"], index=0 if page == "developer" else 1)
     target = "developer" if nav_sel == "Developer Board" else "owner"
@@ -233,11 +210,10 @@ if page != "owner":
         st.query_params["page"] = [target]
         st.rerun()
 else:
-    # on owner page, show a plain header (no switching controls)
     st.markdown("### 🔒 Owner Board (read-only)")
 
 # -------------------------
-# Sidebar: ONLY Add Task / Defect (per request)
+# Sidebar: ONLY Add Task / Defect
 # -------------------------
 st.sidebar.header("➕ Add Task / Defect")
 with st.sidebar.form("add_form", clear_on_submit=True):
@@ -259,15 +235,18 @@ with st.sidebar.form("add_form", clear_on_submit=True):
 # Build DataFrame safely
 items_list = sanitize_items(st.session_state[STATE_KEY])
 df_all = pd.DataFrame(items_list) if items_list else pd.DataFrame(
-    columns=["id","type","title","client","project","billable","status","hours",
-             "rate_at_completion","amount","created_at","updated_at","completed_at","archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"]
+    columns=[
+        "id","type","title","client","project","billable","status","hours",
+        "rate_at_completion","amount","created_at","updated_at","completed_at",
+        "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+    ]
 )
 
 total_hours_all = float(df_all["hours"].fillna(0).sum()) if not df_all.empty else 0.0
 total_hours_billable = float(df_all.loc[(df_all["billable"] == True), "hours"].fillna(0).sum()) if not df_all.empty else 0.0
 
 # =========================
-# Invoice helpers (kept as-is)
+# Invoice helpers (kept)
 # =========================
 def parse_iso_d(d):
     try:
@@ -283,21 +262,16 @@ if not df_all.empty and "completed_at" in df_all.columns and df_all["completed_a
 else:
     min_d = max_d = date.today()
 
-date_sel = st.empty()  # placeholder; invoice filter UI not in sidebar anymore
-
 def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="All"):
     if df_all.empty:
         return pd.DataFrame(columns=["Date","Title","Type","Client","Project","Hours","Rate","Amount"])
 
     df = df_all.copy()
-    # Only completed, billable, with hours (archived or not — invoice should include them)
     df = df[(df["status"] == "completed") & (df["billable"] == True) & df["hours"].notna()]
 
-    # Client filter
     if client_filter != "All":
         df = df[df["client"] == client_filter]
 
-    # Date range filter
     def in_range(iso):
         d = parse_iso_d(iso)
         if not d:
@@ -308,7 +282,6 @@ def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="Al
     if df.empty:
         return pd.DataFrame(columns=["Date","Title","Type","Client","Project","Hours","Rate","Amount"])
 
-    # Rate fallback: use rate_at_completion if present; else current setting
     rate_col, amt_col = [], []
     for _, r in df.iterrows():
         rate = float(r["rate_at_completion"]) if pd.notna(r["rate_at_completion"]) else float(st.session_state.billing_hourly_rate)
@@ -330,13 +303,13 @@ def build_invoice_df(start_d=date.today(), end_d=date.today(), client_filter="Al
     return out
 
 # =========================
-# Developer Board (Kanban) UI
+# Developer Board (full controls)
 # =========================
 def developer_board():
     st.title("📋 Developer Board: Tasks & Defects")
-    st.caption("Completed items are hidden from Kanban by default. Use the Developer controls to edit.")
+    st.caption("Completed items are hidden from Kanban by default. Developer controls available.")
 
-    # KPIs (active = not archived)
+    # KPIs
     active_ready = len(get_items_by_status(st.session_state[STATE_KEY], "ready"))
     active_inprog = len(get_items_by_status(st.session_state[STATE_KEY], "inprogress"))
     active_completed = len([it for it in st.session_state[STATE_KEY] if it["status"] == "completed" and not it.get("archived", False)])
@@ -379,7 +352,7 @@ def developer_board():
                         (f" • Completed: {str(it['completed_at'])[:19].replace('T',' ')}" if it['completed_at'] else "")
                     )
 
-                    # show PR link if present
+                    # show PR link if present (developers see PR)
                     if it.get("pr_url"):
                         st.markdown(f"PR: {it.get('pr_url')}")
 
@@ -396,7 +369,6 @@ def developer_board():
                             cancel_btn = c2.form_submit_button("Cancel")
                             if save_btn:
                                 updated = set_hours_and_complete(st.session_state[STATE_KEY], it["id"], hrs, rate_now)
-                                # developer chooses whether to archive completed items via Developer actions
                                 st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                 save_data(st.session_state[STATE_KEY])
                                 st.session_state.awaiting_hours_id = None
@@ -409,7 +381,7 @@ def developer_board():
                                 st.info("Cancelled.")
                                 st.rerun()
                     else:
-                        # Normal action buttons based on current status
+                        # Developer action buttons
                         if status == "ready":
                             c1, c2, c3 = st.columns(3)
                             if c1.button("→ In Progress", key=f"to_inprog_{it['id']}"):
@@ -463,7 +435,6 @@ def developer_board():
                                 st.rerun()
 
                         elif status == "completed":
-                            # Developers still get archive/edit/delete controls
                             c1, c2, c3, c4 = st.columns(4)
                             if c1.button("✏ Edit Hours", key=f"edit_{it['id']}"):
                                 st.session_state.awaiting_hours_id = it["id"]
@@ -494,8 +465,11 @@ def developer_board():
     st.caption("Everything currently in your JSON file (including archived).")
     st.dataframe(
         df_all if not df_all.empty else pd.DataFrame(
-            columns=["id","type","title","client","project","billable","status","hours",
-                     "rate_at_completion","amount","created_at","updated_at","completed_at","archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"]
+            columns=[
+                "id","type","title","client","project","billable","status","hours",
+                "rate_at_completion","amount","created_at","updated_at","completed_at",
+                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+            ]
         ),
         use_container_width=True
     )
@@ -503,18 +477,13 @@ def developer_board():
     st.markdown(f"**JSON file:** `{DATA_FILE.resolve()}`")
 
 # =========================
-# Owner Board UI (two sections)
+# Owner Board UI (Needs Approval / Approved)
 # =========================
 def owner_board():
     st.title("🔒 Owner Board: Needs Approval / Approved")
-    st.caption("Owner view is read-only except for Approve / Revoke. Approving moves tasks from Needs Approval → Approved.")
+    st.caption("Owner view is read-only except for Approve / Revoke. No max-age or PR checks.")
 
-    # Owner controls: filtering options (read-only)
-    col1, col2 = st.columns(2)
-    max_age_days = col1.number_input("Max age (days) for approval", min_value=0, max_value=365, value=30)
-    require_pr = col2.checkbox("Require Bitbucket PR URL to approve", value=True)
-
-    # Separate lists
+    # Needs Approval (completed, not owner_approved)
     needs_approval = [
         it for it in st.session_state[STATE_KEY]
         if it.get("status") == "completed" and not it.get("owner_approved", False)
@@ -536,16 +505,12 @@ def owner_board():
                 st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
                 st.write(f"**Owner approved:** {'Yes' if it.get('owner_approved') else 'No'}")
 
-                ok, reason = validate_for_approval(it, max_age_days, require_pr)
-                if ok:
-                    if st.button("✅ Approve (move to Approved)", key=f"approve_{it['id']}"):
-                        approve_item(st.session_state[STATE_KEY], it['id'])
-                        st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
-                        save_data(st.session_state[STATE_KEY])
-                        st.success("Approved (moved to Approved tasks).")
-                        st.rerun()
-                else:
-                    st.error(f"Cannot approve: {reason}")
+                if st.button("✅ Approve (move to Approved)", key=f"approve_{it['id']}"):
+                    approve_item(st.session_state[STATE_KEY], it['id'])
+                    st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                    save_data(st.session_state[STATE_KEY])
+                    st.success("Approved (moved to Approved tasks).")
+                    st.rerun()
 
     st.markdown("---")
     st.markdown("## Approved Tasks")
@@ -571,8 +536,11 @@ def owner_board():
     st.caption("Includes archived and approved items.")
     st.dataframe(
         df_all if not df_all.empty else pd.DataFrame(
-            columns=["id","type","title","client","project","billable","status","hours",
-                     "rate_at_completion","amount","created_at","updated_at","completed_at","archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"]
+            columns=[
+                "id","type","title","client","project","billable","status","hours",
+                "rate_at_completion","amount","created_at","updated_at","completed_at",
+                "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by"
+            ]
         ),
         use_container_width=True
     )
@@ -586,7 +554,7 @@ else:
     developer_board()
 
 # =========================
-# Invoice preview (shared at bottom of pages if needed)
+# Invoice preview (shared)
 # =========================
 st.markdown("---")
 st.subheader("🧾 Invoice Preview (filtered)")
