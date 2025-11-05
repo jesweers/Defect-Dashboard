@@ -20,6 +20,12 @@ TYPE_OPTIONS = ["task", "defect"]
 STATE_KEY = "items"  # st.session_state[STATE_KEY]
 
 # -------------------------
+# Simple developer credentials (as requested)
+# -------------------------
+DEV_USERNAME = "jesweer"
+DEV_PASSWORD = "jesBMW518@"
+
+# -------------------------
 # Helpers: time & files
 # -------------------------
 def _now_iso() -> str:
@@ -295,6 +301,10 @@ st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
 if "billing_hourly_rate" not in st.session_state:
     st.session_state.billing_hourly_rate = 75.0
 
+# developer login flag
+if "dev_logged_in" not in st.session_state:
+    st.session_state.dev_logged_in = False
+
 # -------------------------
 # Routing: developer or client
 # Use st.query_params; ?page=client to show client dashboard exclusively
@@ -304,8 +314,47 @@ page = params.get("page", ["developer"])
 if isinstance(page, list):
     page = page[0] if page else "developer"
 
+# -------------------------
+# Developer login UI & handling
+# -------------------------
+def developer_login_box():
+    st.title("🔐 Developer Login")
+    st.info("Please login to access the Developer Dashboard.")
+    with st.form("login_form", clear_on_submit=False):
+        uname = st.text_input("Username", key="login_username")
+        pwd = st.text_input("Password", type="password", key="login_password")
+        submit = st.form_submit_button("Login")
+        if submit:
+            if (uname == DEV_USERNAME) and (pwd == DEV_PASSWORD):
+                st.session_state.dev_logged_in = True
+                st.success("Logged in — opening Developer Dashboard.")
+                # force show developer page in URL
+                st.query_params["page"] = ["developer"]
+                st.rerun()
+            else:
+                st.error("Invalid credentials. Please try again.")
+
+def developer_logout():
+    if st.sidebar.button("Logout (Developer)"):
+        st.session_state.dev_logged_in = False
+        st.success("Logged out.")
+        # refresh to show login screen
+        st.rerun()
+
 # top navigation (only when NOT in strict client page)
 if page != "client":
+    # If trying to open developer page and not logged in, show login
+    if page == "developer" and not st.session_state.dev_logged_in:
+        # Minimal left-panel: keep only Add Task for developer? We adhere to prior user request to keep left panel minimal.
+        # But login needs to be visible; show login and return early.
+        developer_login_box()
+        st.stop()
+    # If logged in, show logout control in sidebar
+    if page == "developer" and st.session_state.dev_logged_in:
+        st.sidebar.markdown("---")
+        st.sidebar.write("Logged in as developer.")
+        developer_logout()
+
     nav = st.selectbox("Open", ["Developer Dashboard", "Client Dashboard"], index=0 if page == "developer" else 1)
     if nav == "Developer Dashboard" and page != "developer":
         st.query_params["page"] = ["developer"]
@@ -314,12 +363,16 @@ if page != "client":
         st.query_params["page"] = ["client"]
         st.rerun()
 else:
+    # client-only view; no login required
     st.markdown("### 🔒 Client Dashboard (single-page view)")
 
 # -------------------------
 # Sidebar for both: Add Task
+# The user requested "remove everything from left panel except add task" earlier.
+# We'll show a minimal sidebar: only Add Task and (for developer) hourly rate + logout.
 # -------------------------
 if page == "developer":
+    # Minimal left panel: hourly rate + Add Task + Logout (handled above)
     st.sidebar.header("Developer Settings")
     st.session_state.billing_hourly_rate = st.sidebar.number_input("Default hourly rate (per hour)", min_value=0.0, step=1.0, value=float(st.session_state.billing_hourly_rate), key="rate_setting")
     st.sidebar.markdown("---")
@@ -348,6 +401,7 @@ if page == "developer":
                 save_and_persist(st.session_state[STATE_KEY])
                 st.sidebar.success("Task created.")
 elif page == "client":
+    # Client sidebar: only Add Task (as requested)
     st.sidebar.header("➕ Client: Add Task / Defect")
     with st.sidebar.form("add_form_client", clear_on_submit=True):
         ttype = st.selectbox("Type", TYPE_OPTIONS, index=0, key="add_type_client")
