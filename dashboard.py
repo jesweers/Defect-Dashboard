@@ -621,6 +621,7 @@ def client_dashboard():
     needs_approval = [it for it in st.session_state[STATE_KEY] if it.get("status") == "completed" and it.get("needs_client_approval") and not it.get("archived")]
     approved = [it for it in st.session_state[STATE_KEY] if it.get("status") == "completed" and it.get("client_approved") and not it.get("archived")]
 
+    # ---------- Fixed: always-render Request Changes form inside each expander ----------
     st.markdown("#### Needs Approval")
     if not needs_approval:
         st.info("No tasks waiting for approval.")
@@ -630,23 +631,30 @@ def client_dashboard():
                 st.write(f"Developer hours: {it.get('hours')}  •  Amount: {it.get('amount')}")
                 render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
                 render_comment_history(it)
-                c1, c2 = st.columns(2)
-                if c1.button("✅ Approve", key=f"c_approve_{it['id']}"):
+
+                cols = st.columns([1,1])
+                # Approve button (quick action)
+                if cols[0].button("✅ Approve", key=f"c_approve_{it['id']}"):
                     client_approve(st.session_state[STATE_KEY], it["id"])
                     st.success("Approved.")
                     st.rerun()
-                if c2.button("↩ Request changes", key=f"c_reqchg_{it['id']}"):
+
+                # Always-visible Request Changes form (no outer button)
+                with cols[1]:
+                    st.markdown("**↩ Request changes (send back to developer)**")
                     with st.form(f"client_req_form_{it['id']}", clear_on_submit=True):
                         comment = st.text_area("Describe changes required (required)", key=f"req_comment_{it['id']}")
                         owner_files = st.file_uploader("Attach images (optional)", accept_multiple_files=True, key=f"req_files_{it['id']}")
                         send = st.form_submit_button("Send to Developer")
                         if send:
-                            if not comment.strip():
+                            if not comment or not comment.strip():
                                 st.warning("Please provide comments explaining required changes.")
                             else:
-                                client_request_changes(st.session_state[STATE_KEY], it['id'], comment.strip(), owner_files if owner_files else None)
+                                files_list = list(owner_files) if owner_files else []
+                                client_request_changes(st.session_state[STATE_KEY], it['id'], comment.strip(), files_list if files_list else None)
                                 st.success("Sent back to developer for fixes.")
                                 st.rerun()
+    # -------------------------------------------------------------------------
 
     st.markdown("---")
     st.markdown("#### Approved Tasks")
