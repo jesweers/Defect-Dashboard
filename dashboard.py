@@ -536,29 +536,31 @@ def developer_dashboard():
                     st.caption(f"Client: {it.get('client','')}  • Project: {it.get('project','')}")
                     render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
                     render_comment_history(it)
-                    c1, c2, c3 = st.columns([1,1,1])
+
+                    # INLINE completion form for reliability:
+                    with st.form(f"complete_form_inline_{it['id']}", clear_on_submit=False):
+                        st.markdown("**Complete task & send to client**")
+                        hours = st.number_input("Hours worked (required)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0), key=f"hours_complete_{it['id']}")
+                        rate = st.number_input("Rate (per hour)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate), key=f"rate_complete_{it['id']}")
+                        dev_comment = st.text_area("Comments for client (required)", key=f"dev_comment_complete_{it['id']}")
+                        add_files = st.file_uploader("Attach images (optional)", accept_multiple_files=True, key=f"complete_files_{it['id']}")
+                        submit_complete = st.form_submit_button("Complete & Send to Client (Requires comment)")
+                        if submit_complete:
+                            files_list = list(add_files) if add_files else []
+                            if not dev_comment or not dev_comment.strip():
+                                st.warning("Please provide a comment for the client before completing.")
+                            elif (hours is None) or (hours == 0):
+                                st.warning("Please enter hours worked (can be fractional).")
+                            else:
+                                developer_complete(st.session_state[STATE_KEY], it["id"], hours, rate, dev_comment.strip(), dev_files=files_list)
+                                st.success("Task completed and sent to client for approval.")
+                                st.rerun()
+
+                    c1, c2 = st.columns([1,1])
                     if c1.button("↩ Ready", key=f"back_ready_{it['id']}"):
                         set_status_local(it["id"], "ready")
                         st.rerun()
-                    # Complete flow: single submit form (fixed)
-                    if c2.button("Complete", key=f"complete_{it['id']}"):
-                        with st.form(f"complete_form_{it['id']}", clear_on_submit=False):
-                            hours = st.number_input("Hours worked (required)", min_value=0.0, step=0.25, value=float(it.get("hours") or 0.0), key=f"hours_complete_{it['id']}")
-                            rate = st.number_input("Rate (per hour)", min_value=0.0, step=1.0, value=float(it.get("rate_at_completion") or st.session_state.billing_hourly_rate), key=f"rate_complete_{it['id']}")
-                            dev_comment = st.text_area("Comments for client (required)", key=f"dev_comment_complete_{it['id']}")
-                            add_files = st.file_uploader("Attach images (optional)", accept_multiple_files=True, key=f"complete_files_{it['id']}")
-                            submit_complete = st.form_submit_button("Complete & Send to Client (Requires comment)")
-                            if submit_complete:
-                                files_list = list(add_files) if add_files else []
-                                if not dev_comment or not dev_comment.strip():
-                                    st.warning("Please provide a comment for the client before completing.")
-                                elif (hours is None) or (hours == 0):
-                                    st.warning("Please enter hours worked (can be fractional).")
-                                else:
-                                    developer_complete(st.session_state[STATE_KEY], it["id"], hours, rate, dev_comment.strip(), dev_files=files_list)
-                                    st.success("Task completed and sent to client for approval.")
-                                    st.rerun()
-                    if c3.button("Delete", key=f"del2_{it['id']}"):
+                    if c2.button("Delete", key=f"del2_{it['id']}"):
                         st.session_state[STATE_KEY] = [x for x in st.session_state[STATE_KEY] if x.get("id") != it["id"]]
                         save_and_persist(st.session_state[STATE_KEY])
                         st.rerun()
