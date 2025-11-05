@@ -1,10 +1,10 @@
+# Full updated Streamlit app with developer "Submit to Owner" flow
 import json
 import uuid
 from datetime import datetime, date
 from pathlib import Path
 from typing import List, Dict, Any
 import io
-import base64
 
 import pandas as pd
 import streamlit as st
@@ -24,11 +24,9 @@ STATE_KEY = "items"  # stored in st.session_state[STATE_KEY]
 # =========================
 def _save_uploaded_file(uploaded_file, item_id: str) -> str:
     """Save an uploaded file to attachments directory and return relative path string."""
-    # create safe randomized filename
     suffix = Path(uploaded_file.name).suffix
     fname = f"{item_id}_{uuid.uuid4().hex}{suffix}"
     dest = ATTACH_DIR / fname
-    # write bytes
     with open(dest, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return str(dest)
@@ -66,6 +64,9 @@ def _coerce_item(x: Dict[str, Any]) -> Dict[str, Any]:
         "review_requested": bool(x.get("review_requested", False) if isinstance(x, dict) else False),
         "review_comments": str(x.get("review_comments", "") if isinstance(x, dict) else "").strip(),
         "review_requested_at": (x.get("review_requested_at") if isinstance(x, dict) else None),
+        # developer response fields
+        "dev_response_comments": str(x.get("dev_response_comments", "") if isinstance(x, dict) else "").strip(),
+        "dev_response_at": (x.get("dev_response_at") if isinstance(x, dict) else None),
         # attachments
         "attachments": list(x.get("attachments", []) if isinstance(x, dict) else []),
     }
@@ -136,6 +137,8 @@ def new_item(title: str, ttype: str, client: str, project: str, billable: bool):
         "review_requested": False,
         "review_comments": "",
         "review_requested_at": None,
+        "dev_response_comments": "",
+        "dev_response_at": None,
         "attachments": [],
     }
 
@@ -180,6 +183,8 @@ def set_hours_and_complete(items, item_id, hours: float, rate_now: float):
             it["review_requested"] = False
             it["review_comments"] = ""
             it["review_requested_at"] = None
+            it["dev_response_comments"] = ""
+            it["dev_response_at"] = None
             return it
     return None
 
@@ -241,9 +246,47 @@ def request_review(items, item_id, comments: str, owner_attach_files: List[Any] 
                 for f in owner_attach_files:
                     if f is not None:
                         saved = _save_uploaded_file(f, item_id)
-                        # append if not already present
                         if saved not in it.get("attachments", []):
                             it.setdefault("attachments", []).append(saved)
+            return it
+    return None
+
+# =========================
+# Developer submits back to owner
+# =========================
+def submit_back_to_owner(items, item_id, dev_comments: str, dev_files: List[Any] = None):
+    """
+    Developer responds to review and submits back to owner:
+    - stores dev_response_comments and timestamp
+    - saves dev files to attachments
+    - marks task completed and visible to owner (status=completed, archived=False)
+    - clears review_requested flag
+    """
+    for it in items:
+        if isinstance(it, dict) and it.get("id") == item_id:
+            it["dev_response_comments"] = str(dev_comments).strip()
+            it["dev_response_at"] = datetime.now().isoformat()
+            # save dev files if any
+            if dev_files:
+                for f in dev_files:
+                    if f is not None:
+                        saved = _save_uploaded_file(f, item_id)
+                        if saved not in it.get("attachments", []):
+                            it.setdefault("attachments", []).append(saved)
+            # mark as completed so owner sees it
+            it["status"] = "completed"
+            it["completed_at"] = datetime.now().isoformat()
+            it["updated_at"] = datetime.now().isoformat()
+            # ensure visible to owner
+            it["archived"] = False
+            # clear review flag (owner will re-review and decide)
+            it["review_requested"] = False
+            it["review_comments"] = ""
+            it["review_requested_at"] = None
+            # keep owner_approved False so it shows in Needs Approval
+            it["owner_approved"] = False
+            it["owner_approved_at"] = None
+            it["owner_approved_by"] = None
             return it
     return None
 
@@ -319,7 +362,8 @@ df_all = pd.DataFrame(items_list) if items_list else pd.DataFrame(
         "id","type","title","client","project","billable","status","hours",
         "rate_at_completion","amount","created_at","updated_at","completed_at",
         "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
-        "review_requested","review_comments","review_requested_at","attachments"
+        "review_requested","review_comments","review_requested_at",
+        "dev_response_comments","dev_response_at","attachments"
     ]
 )
 
@@ -402,11 +446,11 @@ def render_attachments_list(attachments: List[str], key_prefix: str):
             st.write("Attachment error:", e)
 
 # =========================
-# Developer Board (full controls)
+# Developer Board (full controls, including Submit to Owner)
 # =========================
 def developer_board():
     st.title("📋 Developer Board: Tasks & Defects")
-    st.caption("Developer controls available. Completed items auto-archive when you click 'Save Hours & Complete'.")
+    st.caption("Developer controls available. When owner requests changes, use 'Edit & Submit to Owner' to respond.")
 
     # KPIs
     active_ready = len(get_items_by_status(st.session_state[STATE_KEY], "ready"))
@@ -458,6 +502,10 @@ def developer_board():
                     # show review comment if present
                     if it.get("review_requested"):
                         st.warning(f"Review requested: {it.get('review_comments','')}  \nRequested at: {it.get('review_requested_at')}")
+
+                    # show developer response if present
+                    if it.get("dev_response_comments"):
+                        st.info(f"Dev response: {it.get('dev_response_comments')} (at {it.get('dev_response_at')})")
 
                     # render attachments (thumbnails + download)
                     render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
@@ -511,20 +559,21 @@ def developer_board():
                                 save_data(st.session_state[STATE_KEY])
                                 st.rerun()
                             if c3.button("Edit", key=f"edit_meta_{it['id']}"):
-                                # inline edit form including attachment uploader
+                                # inline edit form including attachment uploader and submit-to-owner option
                                 with st.form(f"edit_form_{it['id']}"):
                                     new_title = st.text_input("Title", value=it["title"])
                                     new_client = st.text_input("Client", value=it["client"])
                                     new_project = st.text_input("Project", value=it["project"])
                                     new_billable = st.checkbox("Billable", value=bool(it["billable"]))
                                     add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
-                                    ok = st.form_submit_button("Save")
-                                    if ok:
+                                    dev_resp = st.text_area("Response to owner (optional)", value="")
+                                    submit_to_owner = st.form_submit_button("Submit to Owner")
+                                    save_only = st.form_submit_button("Save")
+                                    if save_only:
                                         it["title"] = new_title.strip()
                                         it["client"] = new_client.strip()
                                         it["project"] = new_project.strip()
                                         it["billable"] = bool(new_billable)
-                                        # save attachments
                                         if add_files:
                                             for f in add_files:
                                                 saved = _save_uploaded_file(f, it["id"])
@@ -533,6 +582,25 @@ def developer_board():
                                         it["updated_at"] = datetime.now().isoformat()
                                         st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                                         save_data(st.session_state[STATE_KEY])
+                                        st.rerun()
+                                    if submit_to_owner:
+                                        # developer responds and submits back to owner for approval
+                                        # save metadata edits + dev response + attachments
+                                        it["title"] = new_title.strip()
+                                        it["client"] = new_client.strip()
+                                        it["project"] = new_project.strip()
+                                        it["billable"] = bool(new_billable)
+                                        # save new attachments
+                                        if add_files:
+                                            for f in add_files:
+                                                saved = _save_uploaded_file(f, it["id"])
+                                                if saved not in it.get("attachments", []):
+                                                    it.setdefault("attachments", []).append(saved)
+                                        # call submit_back_to_owner to mark completed and attach response
+                                        submit_back_to_owner(st.session_state[STATE_KEY], it["id"], dev_resp, dev_files=add_files)
+                                        st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                                        save_data(st.session_state[STATE_KEY])
+                                        st.success("Submitted to Owner for re-review.")
                                         st.rerun()
 
                         elif status == "inprogress":
@@ -546,6 +614,41 @@ def developer_board():
                                 st.session_state.awaiting_hours_id = it["id"]
                                 st.session_state.awaiting_action = "complete"
                                 st.rerun()
+                            if c3.button("Edit & Submit to Owner", key=f"edit_submit_{it['id']}"):
+                                # open a dedicated form for review responses
+                                with st.form(f"dev_review_form_{it['id']}"):
+                                    st.write("Edit metadata (optional) and provide response to owner.")
+                                    new_title = st.text_input("Title", value=it["title"])
+                                    new_client = st.text_input("Client", value=it["client"])
+                                    new_project = st.text_input("Project", value=it["project"])
+                                    add_files = st.file_uploader("Add attachments (optional)", accept_multiple_files=True)
+                                    dev_resp = st.text_area("Response to owner (required to submit)", value="")
+                                    submit_to_owner = st.form_submit_button("Submit to Owner")
+                                    cancel = st.form_submit_button("Cancel")
+                                    if cancel:
+                                        st.rerun()
+                                    if submit_to_owner:
+                                        # require a response comment when owner had requested changes
+                                        if it.get("review_requested") and not dev_resp.strip():
+                                            st.warning("Owner requested changes — please add a response comment before submitting.")
+                                        else:
+                                            # update metadata
+                                            it["title"] = new_title.strip()
+                                            it["client"] = new_client.strip()
+                                            it["project"] = new_project.strip()
+                                            # save attachments
+                                            if add_files:
+                                                for f in add_files:
+                                                    saved = _save_uploaded_file(f, it["id"])
+                                                    if saved not in it.get("attachments", []):
+                                                        it.setdefault("attachments", []).append(saved)
+                                            # submit back
+                                            submit_back_to_owner(st.session_state[STATE_KEY], it["id"], dev_resp, dev_files=add_files)
+                                            st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
+                                            save_data(st.session_state[STATE_KEY])
+                                            st.success("Submitted to Owner for review.")
+                                            st.rerun()
+
                             if c3.button("Delete", key=f"del_{it['id']}"):
                                 st.session_state[STATE_KEY] = [
                                     x for x in st.session_state[STATE_KEY]
@@ -556,7 +659,6 @@ def developer_board():
                                 st.rerun()
 
                         elif status == "completed":
-                            # Developers still get archive/edit/delete controls (rare because completed auto-archives)
                             c1, c2, c3, c4 = st.columns(4)
                             if c1.button("✏ Edit Hours", key=f"edit_{it['id']}"):
                                 st.session_state.awaiting_hours_id = it["id"]
@@ -591,7 +693,8 @@ def developer_board():
                 "id","type","title","client","project","billable","status","hours",
                 "rate_at_completion","amount","created_at","updated_at","completed_at",
                 "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
-                "review_requested","review_comments","review_requested_at","attachments"
+                "review_requested","review_comments","review_requested_at",
+                "dev_response_comments","dev_response_at","attachments"
             ]
         ),
         use_container_width=True
@@ -600,7 +703,7 @@ def developer_board():
     st.markdown(f"**JSON file:** `{DATA_FILE.resolve()}`")
 
 # =========================
-# Owner Board UI (Needs Approval / Approved + Review + owner attachments)
+# Owner Board UI (Needs Approval / Approved + Review + owner attachments + dev response)
 # =========================
 def owner_board():
     st.title("🔒 Owner Board: Needs Approval / Approved")
@@ -629,6 +732,9 @@ def owner_board():
                 st.write(f"**Owner approved:** {'Yes' if it.get('owner_approved') else 'No'}")
                 if it.get("review_requested"):
                     st.info(f"Review requested: {it.get('review_comments','')} (at {it.get('review_requested_at')})")
+                if it.get("dev_response_comments"):
+                    st.info(f"Dev response: {it.get('dev_response_comments')} (at {it.get('dev_response_at')})")
+
                 # show any attachments
                 render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
 
@@ -649,7 +755,6 @@ def owner_board():
                         if not review_txt.strip():
                             st.warning("Please enter review comments before submitting.")
                         else:
-                            # pass owner_files through to request_review
                             request_review(st.session_state[STATE_KEY], it['id'], review_txt.strip(), owner_attach_files=owner_files)
                             st.session_state[STATE_KEY] = sanitize_items(st.session_state[STATE_KEY])
                             save_data(st.session_state[STATE_KEY])
@@ -668,6 +773,8 @@ def owner_board():
                 st.write(f"**Hours:** {it.get('hours')}  •  **Amount:** {it.get('amount')}")
                 st.write(f"**PR URL:** {it.get('pr_url') or '*None*'}")
                 st.write(f"**Approved at:** {it.get('owner_approved_at') or '*Unknown*'}")
+                if it.get("dev_response_comments"):
+                    st.info(f"Dev response: {it.get('dev_response_comments')} (at {it.get('dev_response_at')})")
                 render_attachments_list(it.get("attachments", []), key_prefix=it["id"])
                 if st.button("Revoke approval (move back to Needs Approval)", key=f"revoke_{it['id']}"):
                     revoke_approval(st.session_state[STATE_KEY], it['id'])
@@ -685,7 +792,8 @@ def owner_board():
                 "id","type","title","client","project","billable","status","hours",
                 "rate_at_completion","amount","created_at","updated_at","completed_at",
                 "archived","pr_url","owner_approved","owner_approved_at","owner_approved_by",
-                "review_requested","review_comments","review_requested_at","attachments"
+                "review_requested","review_comments","review_requested_at",
+                "dev_response_comments","dev_response_at","attachments"
             ]
         ),
         use_container_width=True
