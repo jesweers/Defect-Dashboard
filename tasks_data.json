@@ -15,7 +15,7 @@
     "completed_at": "2025-11-07T21:23:13.681084",
     "archived": false,
     "needs_client_approval": true,
-    "client_approved": false,
+    "client_approved": true,
     "review_requested": false,
     "payment_requested": false,
     "payment_confirmed_by_dev": false,
