@@ -434,6 +434,48 @@ df_all = pd.DataFrame(items_list) if items_list else pd.DataFrame(columns=[
 ])
 
 # -------------------------
+# Download helpers (CSV + JSON)
+# -------------------------
+def render_download_buttons(df: pd.DataFrame, key_prefix: str = "all"):
+    """Render CSV download button and JSON download button side-by-side."""
+    if df is None or df.empty:
+        return
+    # Prepare CSV bytes
+    try:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+    except Exception:
+        csv_bytes = "".encode("utf-8")
+    # Prepare JSON bytes (use orient records for readable list-of-objects)
+    try:
+        json_records = df.to_dict(orient="records")
+        json_bytes = json.dumps(json_records, indent=2, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        try:
+            json_bytes = json.dumps(df.to_dict(orient="records"), indent=2, ensure_ascii=False).encode("utf-8")
+        except Exception:
+            json_bytes = "[]".encode("utf-8")
+
+    c1, c2 = st.columns([1,1])
+    # CSV download first
+    with c1:
+        st.download_button(
+            label="⬇ Download CSV",
+            data=csv_bytes,
+            file_name=f"tasks_{key_prefix}.csv",
+            mime="text/csv",
+            key=f"dl_csv_{key_prefix}"
+        )
+    # JSON download immediately after CSV (icon right after)
+    with c2:
+        st.download_button(
+            label="🗒️ Download JSON",
+            data=json_bytes,
+            file_name=f"tasks_{key_prefix}.json",
+            mime="application/json",
+            key=f"dl_json_{key_prefix}"
+        )
+
+# -------------------------
 # UI Helpers: attachments & conversation history
 # -------------------------
 def render_attachments_list(attachments: List[str], key_prefix: str):
@@ -651,6 +693,8 @@ def developer_dashboard():
 
     st.markdown("---")
     st.subheader("All tasks (raw JSON)")
+    # render download buttons (CSV + JSON) side-by-side, JSON right after CSV
+    render_download_buttons(df_all, key_prefix="developer_all")
     st.dataframe(df_all, width="stretch")
 
 # helper to set status quickly (and persist)
@@ -749,6 +793,8 @@ def client_dashboard():
 
     st.markdown("---")
     st.subheader("All tasks (client view)")
+    # render download buttons (CSV + JSON) with JSON right after CSV
+    render_download_buttons(df_all, key_prefix="client_all")
     st.dataframe(df_all, width="stretch")
 
 # -------------------------
