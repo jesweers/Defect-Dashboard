@@ -1,5 +1,6 @@
 [
   {
+    "": 0,
     "id": "78eb2c05-8b95-4d24-a028-4e3917fd6b7b",
     "type": "task",
     "title": "Client list - hide the review button. Comment out the code as we may want it back someday for a different customer.",
@@ -8,7 +9,7 @@
     "billable": true,
     "status": "completed",
     "hours": 0.1,
-    "rate_at_completion": 75.0,
+    "rate_at_completion": 75,
     "amount": 7.5,
     "created_at": "2025-11-07T21:22:56.266412",
     "updated_at": "2025-11-07T21:23:13.681084",
@@ -19,8 +20,8 @@
     "review_requested": false,
     "payment_requested": false,
     "payment_confirmed_by_dev": false,
-    "payment_requested_at": null,
-    "payment_confirmed_at": null,
+    "payment_requested_at": "",
+    "payment_confirmed_at": "",
     "comment_history": [
       {
         "actor": "system",
@@ -35,6 +36,45 @@
         "at": "2025-11-07T21:23:13.681084"
       }
     ],
-    "attachments": []
+    "attachments": ""
+  },
+  {
+    "": 1,
+    "id": "67a76d38-fe68-4cf5-beb6-d08beba02fdf",
+    "type": "task",
+    "title": "Labeling photo pg --1) Tap the photo acts as a toggle, show/hide note block.  Tap photo, If note is displayed, hide it, if note is hidden, show it. 2) when done with #1, hide the note icon, 3) remove the \"x\" icon on the note tab because tap the photo closes the note block.",
+    "client": "",
+    "project": "",
+    "billable": true,
+    "status": "completed",
+    "hours": 0.3,
+    "rate_at_completion": 75,
+    "amount": 22.5,
+    "created_at": "2025-11-14T03:25:34.469073",
+    "updated_at": "2025-11-14T03:32:40.138338",
+    "completed_at": "2025-11-14T03:26:06.243942",
+    "archived": false,
+    "needs_client_approval": false,
+    "client_approved": true,
+    "review_requested": false,
+    "payment_requested": false,
+    "payment_confirmed_by_dev": false,
+    "payment_requested_at": "",
+    "payment_confirmed_at": "",
+    "comment_history": [
+      {
+        "actor": "system",
+        "comment": "Task created",
+        "attachments": [],
+        "at": "2025-11-14T03:25:34.469073"
+      },
+      {
+        "actor": "dev",
+        "comment": "Done code changes available in prod",
+        "attachments": [],
+        "at": "2025-11-14T03:25:34.469073"
+      }
+    ],
+    "attachments": ""
   }
 ]
