@@ -208,5 +208,53 @@
       }
     ],
     "attachments": []
+  },
+  {
+    "id": "46b6fdba-ee71-4541-b047-b7a29a1d757d",
+    "type": "task",
+    "title": "The dbo.webpages_roles  'company' role name has changed to 'Adjuster'.  Change so the search so it will pull the adjusters to the list.",
+    "client": "600west",
+    "project": "",
+    "billable": true,
+    "status": "completed",
+    "hours": 0.2,
+    "rate_at_completion": 75.0,
+    "amount": 15.0,
+    "created_at": "2025-12-22T16:08:12.748707",
+    "updated_at": "2025-12-22T16:15:58.147902",
+    "completed_at": "2025-12-22T16:15:58.147885",
+    "archived": false,
+    "needs_client_approval": true,
+    "client_approved": false,
+    "review_requested": false,
+    "payment_requested": false,
+    "payment_confirmed_by_dev": false,
+    "payment_requested_at": null,
+    "payment_confirmed_at": null,
+    "comment_history": [
+      {
+        "actor": "system",
+        "comment": "Task created",
+        "attachments": [],
+        "at": "2025-12-22T16:08:12.748707"
+      },
+      {
+        "actor": "dev",
+        "comment": "Initial attachments",
+        "attachments": [
+          "attachments/46b6fdba-ee71-4541-b047-b7a29a1d757d_97604e8f842a4033b383ec09af8c8065.jpg"
+        ],
+        "at": "2025-12-22T16:08:12.750352"
+      },
+      {
+        "actor": "dev",
+        "comment": "available in prod",
+        "attachments": [],
+        "at": "2025-12-22T16:15:58.147899"
+      }
+    ],
+    "attachments": [
+      "attachments/46b6fdba-ee71-4541-b047-b7a29a1d757d_97604e8f842a4033b383ec09af8c8065.jpg"
+    ]
   }
 ]
