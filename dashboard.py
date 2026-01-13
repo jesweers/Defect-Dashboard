@@ -1,10 +1,12 @@
 # app.py
 import json
 import uuid
+import base64
 from datetime import datetime, date
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import io
+import mimetypes
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +15,7 @@ import streamlit as st
 # Files / constants
 # -------------------------
 DATA_FILE = Path("tasks_data.json")
+# Keep attachments dir for backwards-compat / migration if needed (not used for new uploads)
 ATTACH_DIR = Path("attachments")
 ATTACH_DIR.mkdir(exist_ok=True)
 STATUSES = ["ready", "inprogress", "completed"]
@@ -26,22 +29,58 @@ DEV_USERNAME = "jesweer"
 DEV_PASSWORD = "jesBMW518"
 
 # -------------------------
-# Helpers: time & files
+# Helpers: time & encoding
 # -------------------------
 def _now_iso() -> str:
     return datetime.now().isoformat()
 
-def _save_uploaded_file(uploaded_file, item_id: str) -> str:
-    suffix = Path(uploaded_file.name).suffix
-    fname = f"{item_id}_{uuid.uuid4().hex}{suffix}"
-    dest = ATTACH_DIR / fname
-    with open(dest, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return str(dest)
+def _encode_uploaded_file_to_b64(uploaded_file, item_id: str) -> Dict[str, Any]:
+    """Encode an UploadedFile to a base64-attached dict for storing in JSON."""
+    try:
+        data = uploaded_file.getbuffer()
+    except Exception:
+        # fallback: try reading .read()
+        try:
+            uploaded_file.seek(0)
+            data = uploaded_file.read()
+        except Exception:
+            data = b""
+    b64 = base64.b64encode(data).decode("ascii")
+    mime = getattr(uploaded_file, "type", "") or mimetypes.guess_type(uploaded_file.name)[0] or "application/octet-stream"
+    return {
+        "id": f"{item_id}_{uuid.uuid4().hex}",
+        "name": uploaded_file.name,
+        "mime": mime,
+        "data": b64,
+    }
 
-def _read_file_bytes(path: str) -> bytes:
-    with open(path, "rb") as f:
-        return f.read()
+def _read_file_bytes(att) -> bytes:
+    """Return bytes for an attachment entry which may be:
+       - a dict {name,mime,data}
+       - a legacy path string (try to read from disk)
+       - a dict with 'path' (legacy)
+    """
+    if isinstance(att, dict):
+        if att.get("data"):
+            try:
+                return base64.b64decode(att["data"])
+            except Exception:
+                return b""
+        if att.get("path"):
+            try:
+                with open(att["path"], "rb") as f:
+                    return f.read()
+            except Exception:
+                return b""
+    if isinstance(att, str):
+        p = Path(att)
+        if p.exists():
+            try:
+                with open(p, "rb") as f:
+                    return f.read()
+            except Exception:
+                return b""
+    return b""
 
 # -------------------------
 # Persistence
@@ -66,23 +105,60 @@ def save_and_persist(items: List[Dict[str, Any]]):
 # -------------------------
 # Normalize / sanitize
 # -------------------------
+def _coerce_attachment(a, item_id: str):
+    """Normalize a single attachment entry to dict form:
+       - if string path -> {'name': Path(...).name, 'path': ..., 'data': None}
+       - if dict with data -> ensure keys exist
+    """
+    if isinstance(a, str):
+        return {"id": f"{item_id}_{uuid.uuid4().hex}", "name": Path(a).name, "mime": None, "data": None, "path": a}
+    if isinstance(a, dict):
+        return {
+            "id": a.get("id", f"{item_id}_{uuid.uuid4().hex}"),
+            "name": a.get("name", "") or (Path(a.get("path","")).name if a.get("path") else ""),
+            "mime": a.get("mime"),
+            "data": a.get("data"),
+            "path": a.get("path") if a.get("path") else None,
+        }
+    return None
+
+def _coerce_comment_entry(e, item_id: str):
+    if not isinstance(e, dict):
+        return None
+    attachments = e.get("attachments") or []
+    norm_atts = []
+    for a in attachments:
+        ca = _coerce_attachment(a, item_id)
+        if ca:
+            norm_atts.append(ca)
+    return {
+        "actor": str(e.get("actor", "system")),
+        "comment": str(e.get("comment", "") or ""),
+        "attachments": norm_atts,
+        "at": e.get("at") or _now_iso(),
+    }
+
 def _coerce_item(x: Dict[str, Any]) -> Dict[str, Any]:
     # normalize comment history
     ch = x.get("comment_history") if isinstance(x, dict) else None
     if not isinstance(ch, list):
         ch = []
     norm_ch = []
+    item_id = (x.get("id") if isinstance(x, dict) else str(uuid.uuid4())) or str(uuid.uuid4())
     for e in ch:
-        if not isinstance(e, dict):
-            continue
-        norm_ch.append({
-            "actor": str(e.get("actor", "system")),
-            "comment": str(e.get("comment", "") or ""),
-            "attachments": list(e.get("attachments", []) or []),
-            "at": e.get("at") or _now_iso(),
-        })
+        ce = _coerce_comment_entry(e, item_id)
+        if ce:
+            norm_ch.append(ce)
+    # normalize attachments at item level
+    raw_atts = list(x.get("attachments", []) if isinstance(x, dict) else [])
+    norm_atts = []
+    for a in raw_atts:
+        ca = _coerce_attachment(a, item_id)
+        if ca:
+            norm_atts.append(ca)
+
     base = {
-        "id": x.get("id", str(uuid.uuid4())) if isinstance(x, dict) else str(uuid.uuid4()),
+        "id": item_id,
         "type": (x.get("type") if isinstance(x, dict) else "task") or "task",
         "title": str(x.get("title", "") if isinstance(x, dict) else "").strip(),
         "client": str(x.get("client", "") if isinstance(x, dict) else "").strip(),
@@ -105,7 +181,7 @@ def _coerce_item(x: Dict[str, Any]) -> Dict[str, Any]:
         "payment_requested_at": x.get("payment_requested_at"),
         "payment_confirmed_at": x.get("payment_confirmed_at"),
         "comment_history": norm_ch,
-        "attachments": list(x.get("attachments", []) if isinstance(x, dict) else []),
+        "attachments": norm_atts,
     }
     if base["status"] not in STATUSES:
         base["status"] = "ready"
@@ -173,21 +249,31 @@ def get_items_by_status(items, status):
     return out
 
 def append_history(items, item_id: str, actor: str, comment: str, attachment_files: Optional[List[Any]] = None):
-    """Add entry to conversation and persist using save_and_persist."""
+    """Add entry to conversation and persist using save_and_persist.
+       attachment_files are UploadedFile objects (streamlit) OR legacy dicts/paths.
+    """
     for it in items:
         if isinstance(it, dict) and it.get("id") == item_id:
-            saved_paths = []
+            saved_attachments = []
             if attachment_files:
                 for f in attachment_files:
-                    if f is not None:
-                        saved = _save_uploaded_file(f, item_id)
-                        saved_paths.append(saved)
-                        if saved not in it.get("attachments", []):
-                            it.setdefault("attachments", []).append(saved)
+                    if f is None:
+                        continue
+                    # If it's an UploadedFile (has .getbuffer), encode to base64 dict
+                    if hasattr(f, "getbuffer"):
+                        enc = _encode_uploaded_file_to_b64(f, item_id)
+                        saved_attachments.append(enc)
+                        it.setdefault("attachments", []).append(enc)
+                    # If it's already an attachment dict or path string
+                    elif isinstance(f, dict) or isinstance(f, str):
+                        ca = _coerce_attachment(f, item_id)
+                        if ca:
+                            saved_attachments.append(ca)
+                            it.setdefault("attachments", []).append(ca)
             entry = {
                 "actor": actor,
                 "comment": str(comment or ""),
-                "attachments": saved_paths,
+                "attachments": saved_attachments,
                 "at": _now_iso(),
             }
             it.setdefault("comment_history", []).append(entry)
@@ -210,7 +296,7 @@ def developer_complete(items, item_id: str, hours: float, rate: float, dev_comme
             it["archived"] = False
             it["needs_client_approval"] = True
             it["client_approved"] = False
-            # append dev comment and persist
+            # append dev comment and persist (this will also attach files)
             append_history(items, item_id, "dev", dev_comment or "", dev_files)
             save_and_persist(items)
             return it
@@ -393,9 +479,9 @@ if page == "developer":
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"])
-                        saved_paths.append(saved)
-                        item.setdefault("attachments", []).append(saved)
+                        enc = _encode_uploaded_file_to_b64(f, item["id"])
+                        saved_paths.append(enc)
+                        item.setdefault("attachments", []).append(enc)
                     item.setdefault("comment_history", []).append({"actor": "dev", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
                 st.session_state[STATE_KEY].append(item)
                 save_and_persist(st.session_state[STATE_KEY])
@@ -418,9 +504,9 @@ elif page == "client":
                 if files:
                     saved_paths = []
                     for f in files:
-                        saved = _save_uploaded_file(f, item["id"])
-                        saved_paths.append(saved)
-                        item.setdefault("attachments", []).append(saved)
+                        enc = _encode_uploaded_file_to_b64(f, item["id"])
+                        saved_paths.append(enc)
+                        item.setdefault("attachments", []).append(enc)
                     item.setdefault("comment_history", []).append({"actor": "client", "comment": "Initial attachments", "attachments": saved_paths, "at": _now_iso()})
                 st.session_state[STATE_KEY].append(item)
                 save_and_persist(st.session_state[STATE_KEY])
@@ -478,21 +564,34 @@ def render_download_buttons(df: pd.DataFrame, key_prefix: str = "all"):
 # -------------------------
 # UI Helpers: attachments & conversation history
 # -------------------------
-def render_attachments_list(attachments: List[str], key_prefix: str):
+def render_attachments_list(attachments: List[Any], key_prefix: str):
     if not attachments:
         return
-    for idx, p in enumerate(attachments):
+    for idx, a in enumerate(attachments):
         try:
-            pth = Path(p)
-            if not pth.exists():
-                st.caption(f"Missing attachment: {p}")
-                continue
-            try:
-                st.image(str(pth), caption=pth.name, use_column_width=False)
-            except Exception:
-                st.write(f"Attachment: {pth.name}")
-            data = _read_file_bytes(str(pth))
-            st.download_button(label=f"Download {pth.name}", data=data, file_name=pth.name, key=f"dl_{key_prefix}_{idx}")
+            # a may be dict with 'data' or legacy path string
+            if isinstance(a, dict):
+                data = _read_file_bytes(a)
+                name = a.get("name") or f"attachment_{idx}"
+                # try to display if image-like
+                try:
+                    st.image(data, caption=name, use_column_width=False)
+                except Exception:
+                    st.write(f"Attachment: {name}")
+                st.download_button(label=f"Download {name}", data=data, file_name=name, key=f"dl_{key_prefix}_{a.get('id', idx)}")
+            elif isinstance(a, str):
+                pth = Path(a)
+                if not pth.exists():
+                    st.caption(f"Missing attachment: {a}")
+                    continue
+                try:
+                    st.image(str(pth), caption=pth.name, use_column_width=False)
+                except Exception:
+                    st.write(f"Attachment: {pth.name}")
+                data = _read_file_bytes(a)
+                st.download_button(label=f"Download {pth.name}", data=data, file_name=pth.name, key=f"dl_{key_prefix}_{idx}")
+            else:
+                st.write("Unknown attachment entry")
         except Exception as e:
             st.write("Attachment error:", e)
 
@@ -526,7 +625,9 @@ def render_comment_history(item: Dict[str, Any]):
         """
         st.markdown(html, unsafe_allow_html=True)
         if attachments:
-            render_attachments_list(attachments, key_prefix=f"{item['id']}_{actor}_{at}")
+            # key prefix should avoid unsafe chars
+            base_key = f"{item['id']}_{actor}_{at.replace(':','_').replace(' ','_')}"
+            render_attachments_list(attachments, key_prefix=base_key)
 
 # -------------------------
 # Developer Dashboard
@@ -607,9 +708,9 @@ def developer_dashboard():
                                 it["project"] = new_project.strip()
                                 if add_files:
                                     for f in add_files:
-                                        saved = _save_uploaded_file(f, it["id"])
-                                        if saved not in it.get("attachments", []):
-                                            it.setdefault("attachments", []).append(saved)
+                                        enc = _encode_uploaded_file_to_b64(f, it["id"])
+                                        if enc not in it.get("attachments", []):
+                                            it.setdefault("attachments", []).append(enc)
                                             append_history(st.session_state[STATE_KEY], it["id"], "dev", "Added attachment", [f])
                                 it["updated_at"] = _now_iso()
                                 save_and_persist(st.session_state[STATE_KEY])
