@@ -810,5 +810,43 @@
         "path": null
       }
     ]
+  },
+  {
+    "id": "2e9ebbd4-97d7-40fe-92a8-547a83015812",
+    "type": "task",
+    "title": "Address issue",
+    "client": "600west",
+    "project": "",
+    "billable": true,
+    "status": "completed",
+    "hours": 1.0,
+    "rate_at_completion": 75.0,
+    "amount": 75.0,
+    "created_at": "2026-02-06T03:47:28.359351",
+    "updated_at": "2026-02-06T03:47:39.851678",
+    "completed_at": "2026-02-06T03:47:39.851659",
+    "archived": false,
+    "needs_client_approval": true,
+    "client_approved": false,
+    "review_requested": false,
+    "payment_requested": false,
+    "payment_confirmed_by_dev": false,
+    "payment_requested_at": null,
+    "payment_confirmed_at": null,
+    "comment_history": [
+      {
+        "actor": "system",
+        "comment": "Task created",
+        "attachments": [],
+        "at": "2026-02-06T03:47:28.359351"
+      },
+      {
+        "actor": "dev",
+        "comment": "Fixed",
+        "attachments": [],
+        "at": "2026-02-06T03:47:39.851673"
+      }
+    ],
+    "attachments": []
   }
 ]
