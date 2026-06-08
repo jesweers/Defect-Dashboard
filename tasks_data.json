@@ -842,5 +842,43 @@
         "path": null
       }
     ]
+  },
+  {
+    "id": "4cfeba9e-9801-444a-ba51-81bd13a95774",
+    "type": "task",
+    "title": "Archive page changes",
+    "client": "600west",
+    "project": "",
+    "billable": true,
+    "status": "completed",
+    "hours": 1.5,
+    "rate_at_completion": 75.0,
+    "amount": 112.5,
+    "created_at": "2026-06-08T05:56:44.622052",
+    "updated_at": "2026-06-08T05:57:14.533964",
+    "completed_at": "2026-06-08T05:57:14.533937",
+    "archived": false,
+    "needs_client_approval": true,
+    "client_approved": false,
+    "review_requested": false,
+    "payment_requested": false,
+    "payment_confirmed_by_dev": false,
+    "payment_requested_at": null,
+    "payment_confirmed_at": null,
+    "comment_history": [
+      {
+        "actor": "system",
+        "comment": "Task created",
+        "attachments": [],
+        "at": "2026-06-08T05:56:44.622052"
+      },
+      {
+        "actor": "dev",
+        "comment": "archive chane done and completed",
+        "attachments": [],
+        "at": "2026-06-08T05:57:14.533958"
+      }
+    ],
+    "attachments": []
   }
 ]
